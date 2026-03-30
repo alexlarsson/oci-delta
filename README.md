@@ -96,11 +96,23 @@ Here are the delta sizes going between these.
 -rw-r--r--. 1 alex alex  16M 27 mar 14.30 image-to-image2.delta
 ```
 
+I also computed a full delta between quay.io/fedora/fedora-bootc:41-x86_64 and quay.io/fedora/fedora-bootc:42-x86_64:
+
+```
+-rw-r--r--. 1 alex alex 972M 30 mar 11.37 fedora-bootc-41-x86_64.oci-archive
+-rw-r--r--. 1 alex alex 999M 30 mar 11.37 fedora-bootc-42-x86_64.oci-archive
+-rw-r--r--. 1 alex alex 555M 30 mar 11.56 fedora-41-to-42.delta
+```
+
+There is a script `tools/analyze-delta.py` in the repo that analyzes the produced deltas (with more
+detail if you pass `--verbose`). This allows you to see in more detail what is being reused.
+
+
 ## Requirements
 
 The target system has to run a bootc version that contains (the fix to use layer
-diff_ids)[https://github.com/bootc-dev/bootc/pull/2081]. This is not yet in a release, but
-will be in the release after 1.14.1.
+diff_ids)[https://github.com/bootc-dev/bootc/pull/2081]. This is not yet in a release, but will be
+in the release after 1.14.1.
 
 The required support in tar-diff is not yet merged, so we're relying on the version in (the
 PR)[https://github.com/containers/tar-diff/pull/66].
