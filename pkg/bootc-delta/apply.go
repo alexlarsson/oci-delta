@@ -241,7 +241,7 @@ func processLayerDiff(opts *ApplyOptions, tarWriter *tar.Writer, layerDigest dig
 
 	// Create gzip writer that writes to both compressedHash and tmpFile
 	compressedMulti := io.MultiWriter(compressedHash, tmpFile)
-	gzWriter, err := gzip.NewWriterLevel(compressedMulti, gzip.BestCompression)
+	gzWriter, err := gzip.NewWriterLevel(compressedMulti, gzip.DefaultCompression)
 	if err != nil {
 		return err
 	}
