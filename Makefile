@@ -6,8 +6,9 @@ build:
 clean:
 	rm -f bootc-delta
 
-test:
+test: build
 	go test ./...
+	python3 tools/test-synthetic.py
 
 fmt:
 	go fmt ./...
