@@ -284,6 +284,7 @@ func computeLayerDiffsParallel(opts *CreateOptions, old *OCIImage, new *OCIImage
 	diffOpts := tardiff.NewOptions()
 	diffOpts.SetIgnoreSourcePrefixes([]string{"sysroot/ostree/"})
 	diffOpts.SetApplyWhiteouts(true)
+	diffOpts.SetTmpDir(opts.TmpDir)
 
 	var oldFiles []io.ReadSeeker
 	for _, layer := range old.layers {
