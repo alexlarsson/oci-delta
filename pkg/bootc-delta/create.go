@@ -378,7 +378,7 @@ func runTarDiff(old *OCIImage, new *OCIImage, newLayerDigest digest.Digest, outp
 	defer outFile.Close()
 
 	opts := tardiff.NewOptions()
-	opts.SetSourcePrefixes([]string{"sysroot/ostree/repo/objects/"})
+	opts.SetIgnoreSourcePrefixes([]string{"sysroot/ostree/"})
 
 	return tardiff.Diff(oldFiles, newFile, outFile, opts)
 }
