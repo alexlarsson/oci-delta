@@ -19,6 +19,7 @@ import (
 type ApplyOptions struct {
 	DeltaPath   string
 	OutputPath  string
+	RepoPath    string
 	DeltaSource string
 	TmpDir      string
 	Debug       func(format string, args ...interface{})
@@ -31,6 +32,7 @@ type deltaArtifact struct {
 	imageConfig         v1.Image
 	imageManifestDigest digest.Digest
 	imageConfigDigest   digest.Digest
+	sourceConfigDigest  string
 	// deltaLayerByTo maps delta.to digest → delta manifest layer descriptor
 	deltaLayerByTo map[digest.Digest]v1.Descriptor
 }
@@ -62,6 +64,9 @@ func parseDeltaArtifact(opts *ApplyOptions, tarIndex *TarIndex) (*deltaArtifact,
 	if deltaManifest.Config.MediaType != mediaTypeDeltaConfig {
 		return nil, fmt.Errorf("not a delta artifact (config mediaType: %s)", deltaManifest.Config.MediaType)
 	}
+
+	sourceConfigDigest := deltaManifest.Annotations[annotationDeltaSourceConfig]
+
 	// Find embedded image manifest and config by media type, and collect
 	// delta layer descriptors (keyed by delta.to) from the remaining layers.
 	var imageManifestDesc, imageConfigDesc *v1.Descriptor
@@ -118,6 +123,7 @@ func parseDeltaArtifact(opts *ApplyOptions, tarIndex *TarIndex) (*deltaArtifact,
 		imageConfig:         imageConfig,
 		imageManifestDigest: imageManifestDesc.Digest,
 		imageConfigDigest:   imageConfigDesc.Digest,
+		sourceConfigDigest:  sourceConfigDigest,
 		deltaLayerByTo:      deltaLayerByTo,
 	}, nil
 }
@@ -125,7 +131,11 @@ func parseDeltaArtifact(opts *ApplyOptions, tarIndex *TarIndex) (*deltaArtifact,
 func ApplyDelta(opts ApplyOptions) error {
 	opts.Debug("Applying delta: %s", opts.DeltaPath)
 	opts.Debug("Output: %s", opts.OutputPath)
-	opts.Debug("Delta source: %s", opts.DeltaSource)
+	if opts.DeltaSource != "" {
+		opts.Debug("Delta source: %s", opts.DeltaSource)
+	} else {
+		opts.Debug("Ostree repo: %s", opts.RepoPath)
+	}
 
 	opts.Debug("\nIndexing delta file...")
 	deltaTarIndex, err := indexTarArchive(opts.DeltaPath)
@@ -139,6 +149,12 @@ func ApplyDelta(opts ApplyOptions) error {
 	if err != nil {
 		return err
 	}
+
+	dataSource, err := getDataSource(&opts, artifact.sourceConfigDigest)
+	if err != nil {
+		return fmt.Errorf("failed to create data source: %w", err)
+	}
+	defer func() { _ = dataSource.Close() }()
 
 	// Reconstruct diff_id lookup from image config.
 	layerDiffIDs := artifact.imageConfig.RootFS.DiffIDs
@@ -187,7 +203,7 @@ func ApplyDelta(opts ApplyOptions) error {
 			if err != nil {
 				return fmt.Errorf("failed to read tar-diff for layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
-			newDigest, newSize, err := processLayerDiff(&opts, tarWriter, r, expectedDiffID)
+			newDigest, newSize, err := processLayerDiff(&opts, tarWriter, r, expectedDiffID, dataSource)
 			if err != nil {
 				return err
 			}
@@ -237,7 +253,7 @@ func ApplyDelta(opts ApplyOptions) error {
 	return nil
 }
 
-func processLayerDiff(opts *ApplyOptions, tarWriter *tar.Writer, tarDiffReader io.Reader, expectedDiffID digest.Digest) (newDigest digest.Digest, newSize int64, err error) {
+func processLayerDiff(opts *ApplyOptions, tarWriter *tar.Writer, tarDiffReader io.Reader, expectedDiffID digest.Digest, dataSource tarpatch.DataSource) (newDigest digest.Digest, newSize int64, err error) {
 	tmpFile, err := os.CreateTemp(opts.TmpDir, "bootc-delta-layer-*.gz")
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to create temp file: %w", err)
@@ -260,7 +276,6 @@ func processLayerDiff(opts *ApplyOptions, tarWriter *tar.Writer, tarDiffReader i
 	// Chain: tar-patch → [diffIDHash, gzWriter] → [compressedHash, tmpFile]
 	uncompressedMulti := io.MultiWriter(diffIDHash, gzWriter)
 
-	dataSource := tarpatch.NewFilesystemDataSource(opts.DeltaSource)
 	if err := tarpatch.Apply(tarDiffReader, dataSource, uncompressedMulti); err != nil {
 		gzWriter.Close()
 		return "", 0, fmt.Errorf("tar-patch failed: %w", err)

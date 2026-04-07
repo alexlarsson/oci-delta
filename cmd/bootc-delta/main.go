@@ -125,7 +125,8 @@ func createCommand(args []string) error {
 
 func applyCommand(args []string) error {
 	fs := flag.NewFlagSet("bootc-delta apply", flag.ContinueOnError)
-	deltaSource := fs.String("delta-source", "/", "source directory for delta reconstruction")
+	repoPath := fs.String("repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
+	deltaSource := fs.String("delta-source", "", "source directory for delta reconstruction (alternative to -repo)")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -150,6 +151,16 @@ func applyCommand(args []string) error {
 		return fmt.Errorf("expected 2 arguments, got %d", fs.NArg())
 	}
 
+	repoExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "repo" {
+			repoExplicit = true
+		}
+	})
+	if repoExplicit && *deltaSource != "" {
+		return fmt.Errorf("-repo and -delta-source are mutually exclusive")
+	}
+
 	tmpDir, err := os.MkdirTemp("/var/tmp", "bootc-delta-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
@@ -159,6 +170,7 @@ func applyCommand(args []string) error {
 	opts := bootcdelta.ApplyOptions{
 		DeltaPath:   fs.Arg(0),
 		OutputPath:  fs.Arg(1),
+		RepoPath:    *repoPath,
 		DeltaSource: *deltaSource,
 		TmpDir:      tmpDir,
 		Debug: func(format string, args ...interface{}) {
