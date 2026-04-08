@@ -3,20 +3,19 @@
 set -e
 
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 <image1.oci-archive> <image2.oci-archive> [delta-source]"
+    echo "Usage: $0 <image1.oci-archive> <image2.oci-archive>"
     echo ""
     echo "Creates a delta from image1 to image2, reconstructs image2, and validates diff_ids match."
+    echo "An ostree repo is created from image1 and used as the delta source."
     echo ""
     echo "Arguments:"
     echo "  image1.oci-archive  Path to old OCI archive"
     echo "  image2.oci-archive  Path to new OCI archive"
-    echo "  delta-source        Optional: source directory for delta reconstruction (default: /)"
     exit 1
 fi
 
 IMAGE1="$1"
 IMAGE2="$2"
-DELTA_SOURCE="${3:-/}"
 
 if [ ! -f "$IMAGE1" ]; then
     echo "Error: $IMAGE1 not found"
@@ -33,7 +32,14 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 DELTA_FILE="$TMPDIR/test.bootc-delta"
 RECONSTRUCTED="$TMPDIR/reconstructed.oci-archive"
+OSTREE_REPO="$TMPDIR/ostree-repo"
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "==> Creating ostree repo from $IMAGE1"
+python3 "$SCRIPT_DIR/create-ostree-repo.py" "$IMAGE1" "$OSTREE_REPO"
+
+echo ""
 echo "==> Creating delta: $IMAGE1 -> $IMAGE2"
 ./bootc-delta create -verbose "$IMAGE1" "$IMAGE2" "$DELTA_FILE"
 
@@ -47,7 +53,7 @@ echo "Delta size: $DELTA_SIZE bytes"
 
 echo ""
 echo "==> Applying delta to reconstruct image"
-./bootc-delta apply -delta-source "$DELTA_SOURCE" "$DELTA_FILE" "$RECONSTRUCTED"
+./bootc-delta apply -repo "$OSTREE_REPO" "$DELTA_FILE" "$RECONSTRUCTED"
 
 if [ ! -f "$RECONSTRUCTED" ]; then
     echo "Error: Reconstructed archive was not created"
