@@ -12,17 +12,6 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-const (
-	mediaTypeDeltaConfig        = "application/vnd.redhat.bootc-delta.config.v1+json"
-	mediaTypeTarDiff            = "application/vnd.tar-diff"
-	annotationDeltaTarget       = "io.github.containers.delta.target"
-	annotationDeltaSource       = "io.github.containers.delta.source"
-	annotationDeltaSourceConfig = "io.github.containers.delta.source-config"
-	annotationDeltaTo           = "io.github.containers.delta.to"
-	annotationDeltaReused       = "io.github.containers.delta.reused"
-	annotationDeltaReusedDiffID = "io.github.containers.delta.reused-diff-id"
-)
-
 var ociLayoutFileData = []byte(`{"imageLayoutVersion":"1.0.0"}`)
 
 type TarIndex struct {

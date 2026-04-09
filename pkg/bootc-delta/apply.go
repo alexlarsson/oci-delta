@@ -28,17 +28,6 @@ type ApplyOptions struct {
 	Warning        func(format string, args ...interface{})
 }
 
-// deltaArtifact holds the parsed contents of a delta OCI artifact.
-type deltaArtifact struct {
-	imageManifest       v1.Manifest
-	imageConfig         v1.Image
-	imageManifestDigest digest.Digest
-	imageConfigDigest   digest.Digest
-	sourceConfigDigest  string
-	// deltaLayerByTo maps delta.to digest → delta manifest layer descriptor
-	deltaLayerByTo map[digest.Digest]v1.Descriptor
-}
-
 func getDataSource(opts *ApplyOptions, sourceConfigDigest string) (deltaDataSource, error) {
 	if opts.DeltaSource != "" {
 		return &simpleDataSource{tarpatch.NewFilesystemDataSource(opts.DeltaSource)}, nil
@@ -51,97 +40,6 @@ func getDataSource(opts *ApplyOptions, sourceConfigDigest string) (deltaDataSour
 		return nil, err
 	}
 	return &simpleDataSource{ds}, nil
-}
-
-func parseDeltaArtifact(opts *ApplyOptions, tarIndex *TarIndex) (*deltaArtifact, error) {
-	indexData, err := tarIndex.ReadFile("index.json")
-	if err != nil {
-		return nil, fmt.Errorf("delta archive does not contain index.json")
-	}
-	var ociIndex v1.Index
-	if err := json.Unmarshal(indexData, &ociIndex); err != nil {
-		return nil, fmt.Errorf("failed to parse index.json: %w", err)
-	}
-	if len(ociIndex.Manifests) == 0 {
-		return nil, fmt.Errorf("delta archive contains no manifests")
-	}
-
-	deltaManifestDigest := ociIndex.Manifests[0].Digest
-	opts.Debug("  Delta manifest: %s", deltaManifestDigest.Encoded()[:16])
-
-	deltaManifestData, err := tarIndex.ReadFile(blobTarName(deltaManifestDigest))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read delta manifest: %w", err)
-	}
-	var deltaManifest v1.Manifest
-	if err := json.Unmarshal(deltaManifestData, &deltaManifest); err != nil {
-		return nil, fmt.Errorf("failed to parse delta manifest: %w", err)
-	}
-	if deltaManifest.Config.MediaType != mediaTypeDeltaConfig {
-		return nil, fmt.Errorf("not a delta artifact (config mediaType: %s)", deltaManifest.Config.MediaType)
-	}
-
-	sourceConfigDigest := deltaManifest.Annotations[annotationDeltaSourceConfig]
-
-	// Find embedded image manifest and config by media type, and collect
-	// delta layer descriptors (keyed by delta.to) from the remaining layers.
-	var imageManifestDesc, imageConfigDesc *v1.Descriptor
-	deltaLayerByTo := make(map[digest.Digest]v1.Descriptor)
-	for i := range deltaManifest.Layers {
-		layer := &deltaManifest.Layers[i]
-		switch layer.MediaType {
-		case v1.MediaTypeImageManifest:
-			imageManifestDesc = layer
-		case v1.MediaTypeImageConfig:
-			imageConfigDesc = layer
-		case mediaTypeTarDiff, v1.MediaTypeImageLayerGzip:
-			toStr := layer.Annotations[annotationDeltaTo]
-			if toStr == "" {
-				continue
-			}
-			toDigest, err := digest.Parse(toStr)
-			if err != nil {
-				opts.Warning("invalid delta.to annotation %q: %v", toStr, err)
-				continue
-			}
-			deltaLayerByTo[toDigest] = *layer
-		}
-	}
-	if imageManifestDesc == nil {
-		return nil, fmt.Errorf("delta manifest contains no embedded image manifest layer")
-	}
-	if imageConfigDesc == nil {
-		return nil, fmt.Errorf("delta manifest contains no embedded image config layer")
-	}
-
-	imageManifestData, err := tarIndex.ReadFile(blobTarName(imageManifestDesc.Digest))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embedded image manifest: %w", err)
-	}
-	var imageManifest v1.Manifest
-	if err := json.Unmarshal(imageManifestData, &imageManifest); err != nil {
-		return nil, fmt.Errorf("failed to parse embedded image manifest: %w", err)
-	}
-	opts.Debug("  Image manifest: %s (%d layers)", imageManifestDesc.Digest.Encoded()[:16], len(imageManifest.Layers))
-
-	imageConfigData, err := tarIndex.ReadFile(blobTarName(imageConfigDesc.Digest))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embedded image config: %w", err)
-	}
-	var imageConfig v1.Image
-	if err := json.Unmarshal(imageConfigData, &imageConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse embedded image config: %w", err)
-	}
-	opts.Debug("  Image config: %s (%d diff_ids)", imageConfigDesc.Digest.Encoded()[:16], len(imageConfig.RootFS.DiffIDs))
-
-	return &deltaArtifact{
-		imageManifest:       imageManifest,
-		imageConfig:         imageConfig,
-		imageManifestDigest: imageManifestDesc.Digest,
-		imageConfigDigest:   imageConfigDesc.Digest,
-		sourceConfigDigest:  sourceConfigDigest,
-		deltaLayerByTo:      deltaLayerByTo,
-	}, nil
 }
 
 func ApplyDelta(opts ApplyOptions) error {
@@ -163,7 +61,7 @@ func ApplyDelta(opts ApplyOptions) error {
 	defer deltaTarIndex.Close()
 
 	opts.Debug("\nParsing delta artifact...")
-	artifact, err := parseDeltaArtifact(&opts, deltaTarIndex)
+	artifact, err := parseDeltaArtifact(deltaTarIndex, opts.Debug, opts.Warning)
 	if err != nil {
 		return err
 	}
