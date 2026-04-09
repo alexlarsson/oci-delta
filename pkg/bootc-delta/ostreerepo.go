@@ -327,9 +327,3 @@ func resolveOstreeDataSource(repoPath string, sourceConfigDigest string, debug f
 	return NewOstreeRepoDataSource(repoPath, ref, debug)
 }
 
-func getDataSource(opts *ApplyOptions, sourceConfigDigest string) (tarpatch.DataSource, error) {
-	if opts.DeltaSource != "" {
-		return tarpatch.NewFilesystemDataSource(opts.DeltaSource), nil
-	}
-	return resolveOstreeDataSource(opts.RepoPath, sourceConfigDigest, opts.Debug)
-}

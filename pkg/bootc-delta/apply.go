@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/containers/storage"
 	tarpatch "github.com/containers/tar-diff/pkg/tar-patch"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -17,13 +18,14 @@ import (
 )
 
 type ApplyOptions struct {
-	DeltaPath   string
-	OutputPath  string
-	RepoPath    string
-	DeltaSource string
-	TmpDir      string
-	Debug       func(format string, args ...interface{})
-	Warning     func(format string, args ...interface{})
+	DeltaPath      string
+	OutputPath     string
+	RepoPath       string
+	DeltaSource    string
+	ContainerStore storage.Store
+	TmpDir         string
+	Debug          func(format string, args ...interface{})
+	Warning        func(format string, args ...interface{})
 }
 
 // deltaArtifact holds the parsed contents of a delta OCI artifact.
@@ -35,6 +37,20 @@ type deltaArtifact struct {
 	sourceConfigDigest  string
 	// deltaLayerByTo maps delta.to digest → delta manifest layer descriptor
 	deltaLayerByTo map[digest.Digest]v1.Descriptor
+}
+
+func getDataSource(opts *ApplyOptions, sourceConfigDigest string) (deltaDataSource, error) {
+	if opts.DeltaSource != "" {
+		return &simpleDataSource{tarpatch.NewFilesystemDataSource(opts.DeltaSource)}, nil
+	}
+	if opts.ContainerStore != nil {
+		return resolveContainerStorageDataSource(opts.ContainerStore, sourceConfigDigest, opts.Debug)
+	}
+	ds, err := resolveOstreeDataSource(opts.RepoPath, sourceConfigDigest, opts.Debug)
+	if err != nil {
+		return nil, err
+	}
+	return &simpleDataSource{ds}, nil
 }
 
 func parseDeltaArtifact(opts *ApplyOptions, tarIndex *TarIndex) (*deltaArtifact, error) {
@@ -133,6 +149,8 @@ func ApplyDelta(opts ApplyOptions) error {
 	opts.Debug("Output: %s", opts.OutputPath)
 	if opts.DeltaSource != "" {
 		opts.Debug("Delta source: %s", opts.DeltaSource)
+	} else if opts.ContainerStore != nil {
+		opts.Debug("Container storage")
 	} else {
 		opts.Debug("Ostree repo: %s", opts.RepoPath)
 	}
@@ -154,7 +172,10 @@ func ApplyDelta(opts ApplyOptions) error {
 	if err != nil {
 		return fmt.Errorf("failed to create data source: %w", err)
 	}
-	defer func() { _ = dataSource.Close() }()
+	defer func() {
+		_ = dataSource.Close()
+		_ = dataSource.Cleanup()
+	}()
 
 	// Reconstruct diff_id lookup from image config.
 	layerDiffIDs := artifact.imageConfig.RootFS.DiffIDs

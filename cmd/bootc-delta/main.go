@@ -6,6 +6,7 @@ import (
 	"os"
 
 	bootcdelta "github.com/containers/bootc-delta/pkg/bootc-delta"
+	"github.com/containers/storage"
 )
 
 func main() {
@@ -127,6 +128,7 @@ func applyCommand(args []string) error {
 	fs := flag.NewFlagSet("bootc-delta apply", flag.ContinueOnError)
 	repoPath := fs.String("repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
 	deltaSource := fs.String("delta-source", "", "source directory for delta reconstruction (alternative to -repo)")
+	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to -repo)")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -157,8 +159,28 @@ func applyCommand(args []string) error {
 			repoExplicit = true
 		}
 	})
-	if repoExplicit && *deltaSource != "" {
-		return fmt.Errorf("-repo and -delta-source are mutually exclusive")
+	sourceCount := 0
+	if repoExplicit {
+		sourceCount++
+	}
+	if *deltaSource != "" {
+		sourceCount++
+	}
+	if *containerStorage != "" {
+		sourceCount++
+	}
+	if sourceCount > 1 {
+		return fmt.Errorf("-repo, -delta-source, and -container-storage are mutually exclusive")
+	}
+
+	var store storage.Store
+	if *containerStorage != "" {
+		var err error
+		store, err = bootcdelta.OpenContainerStorage(*containerStorage)
+		if err != nil {
+			return err
+		}
+		defer func() { store.Shutdown(false) }()
 	}
 
 	tmpDir, err := os.MkdirTemp("/var/tmp", "bootc-delta-*")
@@ -168,11 +190,12 @@ func applyCommand(args []string) error {
 	defer os.RemoveAll(tmpDir)
 
 	opts := bootcdelta.ApplyOptions{
-		DeltaPath:   fs.Arg(0),
-		OutputPath:  fs.Arg(1),
-		RepoPath:    *repoPath,
-		DeltaSource: *deltaSource,
-		TmpDir:      tmpDir,
+		DeltaPath:      fs.Arg(0),
+		OutputPath:     fs.Arg(1),
+		RepoPath:       *repoPath,
+		DeltaSource:    *deltaSource,
+		ContainerStore: store,
+		TmpDir:         tmpDir,
 		Debug: func(format string, args ...interface{}) {
 			if *debug {
 				fmt.Printf(format+"\n", args...)
