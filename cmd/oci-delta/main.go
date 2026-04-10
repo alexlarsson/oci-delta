@@ -145,7 +145,7 @@ func createCommand(args []string) error {
 
 func applyCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta apply", flag.ContinueOnError)
-	repoPath := fs.String("repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
+	repoPath := fs.String("ostree-repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
 	deltaSource := fs.String("delta-source", "", "source directory for delta reconstruction (alternative to -repo)")
 	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to -repo)")
 	debug := fs.Bool("debug", false, "show detailed progress information")
@@ -175,7 +175,7 @@ func applyCommand(args []string) error {
 
 	repoExplicit := false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "repo" {
+		if f.Name == "ostree-repo" {
 			repoExplicit = true
 		}
 	})
