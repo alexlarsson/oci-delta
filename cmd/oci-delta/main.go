@@ -145,7 +145,7 @@ func createCommand(args []string) error {
 func applyCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta apply", flag.ContinueOnError)
 	repoPath := fs.String("ostree-repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
-	deltaSource := fs.String("delta-source", "", "source directory for delta reconstruction (alternative to --ostree-repo)")
+	directorySource := fs.String("directory", "", "source directory for delta reconstruction (alternative to --ostree-repo)")
 	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to --ostree-repo)")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
@@ -182,14 +182,14 @@ func applyCommand(args []string) error {
 	if repoExplicit {
 		sourceCount++
 	}
-	if *deltaSource != "" {
+	if *directorySource != "" {
 		sourceCount++
 	}
 	if *containerStorage != "" {
 		sourceCount++
 	}
 	if sourceCount > 1 {
-		return fmt.Errorf("--ostree-repo, --delta-source, and --container-storage are mutually exclusive")
+		return fmt.Errorf("--ostree-repo, --directory, and --container-storage are mutually exclusive")
 	}
 
 	var store storage.Store
@@ -213,7 +213,7 @@ func applyCommand(args []string) error {
 		DeltaPath:      fs.Arg(0),
 		OutputPath:     fs.Arg(1),
 		RepoPath:       *repoPath,
-		DeltaSource:    *deltaSource,
+		DeltaSource:    *directorySource,
 		ContainerStore: store,
 		TmpDir:         tmpDir,
 	}
