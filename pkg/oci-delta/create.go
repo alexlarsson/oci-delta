@@ -179,9 +179,10 @@ func CreateDelta(opts CreateOptions, log Logger) (*CreateStats, error) {
 		deltaAnnotations[annotationDeltaReusedDiffID] = string(reusedDiffIDJSON)
 	}
 	deltaManifest := v1.Manifest{
-		Versioned: specs.Versioned{SchemaVersion: 2},
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		ArtifactType: mediaTypeDelta,
 		Config: v1.Descriptor{
-			MediaType: mediaTypeDeltaConfig,
+			MediaType: v1.MediaTypeEmptyJSON,
 			Digest:    deltaConfigDigest,
 			Size:      int64(len(deltaConfigData)),
 		},

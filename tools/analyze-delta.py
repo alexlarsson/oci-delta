@@ -68,7 +68,7 @@ class TarIndex:
             return f.read(size)
 
 
-MEDIA_DELTA_CONFIG   = "application/vnd.redhat.oci-delta.config.v1+json"
+MEDIA_DELTA           = "application/vnd.redhat.oci-delta.v1"
 MEDIA_TAR_DIFF       = "application/vnd.tar-diff"
 MEDIA_IMAGE_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 MEDIA_IMAGE_CONFIG   = "application/vnd.oci.image.config.v1+json"
@@ -91,8 +91,8 @@ def open_delta(path):
     delta_manifest_digest = oci_index['manifests'][0]['digest']
     delta_manifest = json.loads(idx.read(blob_path(delta_manifest_digest)))
 
-    if delta_manifest.get('config', {}).get('mediaType') != MEDIA_DELTA_CONFIG:
-        sys.exit("error: not a oci-delta file (unexpected config mediaType)")
+    if delta_manifest.get('artifactType') != MEDIA_DELTA:
+        sys.exit("error: not a oci-delta file (unexpected artifactType)")
 
     image_manifest_desc = None
     image_config_desc = None

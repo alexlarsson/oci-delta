@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	mediaTypeDeltaConfig        = "application/vnd.redhat.oci-delta.config.v1+json"
+	mediaTypeDelta              = "application/vnd.redhat.oci-delta.v1"
 	mediaTypeTarDiff            = "application/vnd.tar-diff"
 	annotationDeltaTarget       = "io.github.containers.delta.target"
 	annotationDeltaSource       = "io.github.containers.delta.source"
@@ -66,9 +66,9 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 		tarIndex.Close()
 		return nil, fmt.Errorf("failed to parse delta manifest: %w", err)
 	}
-	if deltaManifest.Config.MediaType != mediaTypeDeltaConfig {
+	if deltaManifest.ArtifactType != mediaTypeDelta {
 		tarIndex.Close()
-		return nil, fmt.Errorf("not a delta artifact (config mediaType: %s)", deltaManifest.Config.MediaType)
+		return nil, fmt.Errorf("not a delta artifact (artifactType: %s)", deltaManifest.ArtifactType)
 	}
 
 	sourceConfigDigest := deltaManifest.Annotations[annotationDeltaSourceConfig]

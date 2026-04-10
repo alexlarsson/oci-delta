@@ -126,7 +126,7 @@ for OCI artifacts, and the delta could indeed be stored in a registy as an oci a
 This format is very similar to the one described in https://github.com/flatpak/flatpak-oci-specs, but with these
 changes:
 
- * The config delta manifest mimetype was changed.
+ * The delta manifest uses `artifactType` instead of a custom config mimetype.
  * We store the original manifests as layers (to make the delta applicable stand-alone).
  * Delta layer order doesn't exactly match the original "new" image, and all layers need not be available.
  * Layers that are used as-is from the original "old" image are recorded in a new `delta.reused` annotation..
@@ -147,8 +147,9 @@ blobs/sha256/<layer-data-hash>      - one blob per changed layer (tar-diff or or
 
 ### Delta manifest
 
-The delta manifest is a standard OCI image manifest with config media type
-`application/vnd.redhat.oci-delta.config.v1+json` and the following top-level annotations:
+The delta manifest is a standard OCI image manifest with `artifactType` set to
+`application/vnd.redhat.oci-delta.v1` and an empty config (`application/vnd.oci.empty.v1+json`).
+It has the following top-level annotations:
 
 | Annotation | Description |
 |---|---|
