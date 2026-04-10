@@ -13,7 +13,6 @@ import (
 	"strings"
 	"unsafe"
 
-	tarpatch "github.com/containers/tar-diff/pkg/tar-patch"
 )
 
 type OstreeRepoDataSource struct {
@@ -271,7 +270,11 @@ func (s *OstreeRepoDataSource) Close() error {
 	return nil
 }
 
-var _ tarpatch.DataSource = (*OstreeRepoDataSource)(nil)
+func (s *OstreeRepoDataSource) Cleanup() error {
+	return nil
+}
+
+var _ DataSource = (*OstreeRepoDataSource)(nil)
 
 func findOstreeRefByConfig(repoPath string, sourceConfigDigest string, log Logger) (string, error) {
 	log.Debug("Looking for ostree ref with config digest %s", sourceConfigDigest)
@@ -318,7 +321,7 @@ func findOstreeRefByConfig(repoPath string, sourceConfigDigest string, log Logge
 	return "", fmt.Errorf("no ostree ref found with config digest %s", sourceConfigDigest)
 }
 
-func resolveOstreeDataSource(repoPath string, sourceConfigDigest string, log Logger) (*OstreeRepoDataSource, error) {
+func ResolveOstreeDataSource(repoPath string, sourceConfigDigest string, log Logger) (*OstreeRepoDataSource, error) {
 	ref, err := findOstreeRefByConfig(repoPath, sourceConfigDigest, log)
 	if err != nil {
 		return nil, err

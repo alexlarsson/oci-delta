@@ -70,7 +70,7 @@ func findImageByConfigDigest(store storage.Store, configDigest string, log Logge
 	return "", fmt.Errorf("no image found with config digest %s", configDigest)
 }
 
-func resolveContainerStorageDataSource(store storage.Store, sourceConfigDigest string, log Logger) (*containerStorageDataSource, error) {
+func ResolveContainerStorageDataSource(store storage.Store, sourceConfigDigest string, log Logger) (DataSource, error) {
 	imageID, err := findImageByConfigDigest(store, sourceConfigDigest, log)
 	if err != nil {
 		return nil, err

@@ -20,8 +20,7 @@ const (
 	annotationDeltaReusedDiffID = "io.github.containers.delta.reused-diff-id"
 )
 
-// deltaArtifact holds the parsed contents of a delta OCI artifact.
-type deltaArtifact struct {
+type DeltaArtifact struct {
 	tarIndex            *TarIndex
 	imageManifest       v1.Manifest
 	imageConfig         v1.Image
@@ -31,7 +30,7 @@ type deltaArtifact struct {
 	deltaLayerByTo      map[digest.Digest]v1.Descriptor
 }
 
-func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
+func ParseDeltaArtifact(path string, log Logger) (*DeltaArtifact, error) {
 	tarIndex, err := indexTarArchive(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to index delta file: %w", err)
@@ -127,7 +126,7 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 	}
 	log.Debug("  Image config: %s (%d diff_ids)", imageConfigDesc.Digest.Encoded()[:16], len(imageConfig.RootFS.DiffIDs))
 
-	return &deltaArtifact{
+	return &DeltaArtifact{
 		tarIndex:            tarIndex,
 		imageManifest:       imageManifest,
 		imageConfig:         imageConfig,
@@ -138,20 +137,24 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 	}, nil
 }
 
-func (d *deltaArtifact) Close() error {
+func (d *DeltaArtifact) Close() error {
 	return d.tarIndex.Close()
 }
 
-func (d *deltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {
+func (d *DeltaArtifact) SourceConfigDigest() string {
+	return d.sourceConfigDigest
+}
+
+func (d *DeltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {
 	return readAll(d.tarIndex, blobTarName(dgst))
 }
 
-func (d *deltaArtifact) GetBlobReader(dgst digest.Digest) (io.ReadSeekCloser, error) {
+func (d *DeltaArtifact) GetBlobReader(dgst digest.Digest) (io.ReadSeekCloser, error) {
 	r, _, err := d.tarIndex.ReadFile(blobTarName(dgst))
 	return r, err
 }
 
-func (d *deltaArtifact) GetBlobSize(dgst digest.Digest) (int64, error) {
+func (d *DeltaArtifact) GetBlobSize(dgst digest.Digest) (int64, error) {
 	r, size, err := d.tarIndex.ReadFile(blobTarName(dgst))
 	if err != nil {
 		return 0, err
@@ -159,4 +162,3 @@ func (d *deltaArtifact) GetBlobSize(dgst digest.Digest) (int64, error) {
 	r.Close()
 	return size, nil
 }
-

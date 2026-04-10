@@ -9,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/containers/storage"
 	tarpatch "github.com/containers/tar-diff/pkg/tar-patch"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -17,63 +16,11 @@ import (
 )
 
 type ApplyOptions struct {
-	DeltaPath      string
-	OutputPath     string
-	RepoPath       string
-	DeltaSource    string
-	ContainerStore storage.Store
-	TmpDir         string
+	TmpDir string
 }
 
-func getDataSource(opts *ApplyOptions, sourceConfigDigest string, log Logger) (deltaDataSource, error) {
-	if opts.DeltaSource != "" {
-		return &simpleDataSource{tarpatch.NewFilesystemDataSource(opts.DeltaSource)}, nil
-	}
-	if opts.ContainerStore != nil {
-		return resolveContainerStorageDataSource(opts.ContainerStore, sourceConfigDigest, log)
-	}
-	ds, err := resolveOstreeDataSource(opts.RepoPath, sourceConfigDigest, log)
-	if err != nil {
-		return nil, err
-	}
-	return &simpleDataSource{ds}, nil
-}
-
-func ApplyDelta(opts ApplyOptions, log Logger) error {
-	log.Debug("Applying delta: %s", opts.DeltaPath)
-	log.Debug("Output: %s", opts.OutputPath)
-	if opts.DeltaSource != "" {
-		log.Debug("Delta source: %s", opts.DeltaSource)
-	} else if opts.ContainerStore != nil {
-		log.Debug("Container storage")
-	} else {
-		log.Debug("Ostree repo: %s", opts.RepoPath)
-	}
-
-	log.Debug("\nParsing delta...")
-	delta, err := parseDeltaArtifact(opts.DeltaPath, log)
-	if err != nil {
-		return err
-	}
-	defer delta.Close()
-
-	dataSource, err := getDataSource(&opts, delta.sourceConfigDigest, log)
-	if err != nil {
-		return fmt.Errorf("failed to create data source: %w", err)
-	}
-	defer func() {
-		_ = dataSource.Close()
-		_ = dataSource.Cleanup()
-	}()
-
-	// Reconstruct diff_id lookup from image config.
+func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, opts ApplyOptions, log Logger) error {
 	layerDiffIDs := delta.imageConfig.RootFS.DiffIDs
-
-	writer, err := OpenOCIWriter(opts.OutputPath, opts.TmpDir)
-	if err != nil {
-		return fmt.Errorf("failed to create output: %w", err)
-	}
-	defer writer.Close()
 
 	log.Debug("\nWriting oci-layout")
 	if err := writer.WriteFile("oci-layout", ociLayoutFileData); err != nil {

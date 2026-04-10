@@ -14,23 +14,12 @@ import (
 )
 
 type ImportOptions struct {
-	DeltaPath string
-	Store     storage.Store
-	Tag       string
-	TmpDir    string
+	Tag    string
+	TmpDir string
 }
 
-func ImportDelta(opts ImportOptions, log Logger) (string, error) {
-	log.Debug("Importing delta: %s", opts.DeltaPath)
-
-	log.Debug("\nParsing delta artifact...")
-	delta, err := parseDeltaArtifact(opts.DeltaPath, log)
-	if err != nil {
-		return "", err
-	}
-	defer delta.Close()
-
-	dataSource, err := resolveContainerStorageDataSource(opts.Store, delta.sourceConfigDigest, log)
+func ImportDelta(delta *DeltaArtifact, store storage.Store, opts ImportOptions, log Logger) (string, error) {
+	dataSource, err := ResolveContainerStorageDataSource(store, delta.sourceConfigDigest, log)
 	if err != nil {
 		return "", fmt.Errorf("failed to create data source: %w", err)
 	}
@@ -52,7 +41,7 @@ func ImportDelta(opts ImportOptions, log Logger) (string, error) {
 
 		deltaLayer, inDelta := delta.deltaLayerByTo[layer.Digest]
 		if !inDelta {
-			sl, err := reuseStorageLayer(opts.Store, diffID, parentLayerID, opts.TmpDir, log)
+			sl, err := reuseStorageLayer(store, diffID, parentLayerID, opts.TmpDir, log)
 			if err != nil {
 				return "", err
 			}
@@ -70,7 +59,7 @@ func ImportDelta(opts ImportOptions, log Logger) (string, error) {
 				pw.CloseWithError(tarpatch.Apply(r, dataSource, pw))
 			}()
 
-			newLayer, _, err := opts.Store.PutLayer("", parentLayerID, nil, "", false, nil, pr)
+			newLayer, _, err := store.PutLayer("", parentLayerID, nil, "", false, nil, pr)
 			pr.Close()
 			if err != nil {
 				return "", fmt.Errorf("failed to store reconstructed layer: %w", err)
@@ -89,7 +78,7 @@ func ImportDelta(opts ImportOptions, log Logger) (string, error) {
 				return "", fmt.Errorf("failed to decompress layer: %w", err)
 			}
 
-			newLayer, _, err := opts.Store.PutLayer("", parentLayerID, nil, "", false, nil, gzReader)
+			newLayer, _, err := store.PutLayer("", parentLayerID, nil, "", false, nil, gzReader)
 			gzReader.Close()
 			if err != nil {
 				return "", fmt.Errorf("failed to store layer: %w", err)
@@ -123,17 +112,17 @@ func ImportDelta(opts ImportOptions, log Logger) (string, error) {
 	if opts.Tag != "" {
 		names = []string{opts.Tag}
 	}
-	image, err := opts.Store.CreateImage("", names, parentLayerID, "", nil)
+	image, err := store.CreateImage("", names, parentLayerID, "", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create image: %w", err)
 	}
 	log.Debug("\nCreated image %s", image.ID)
 
-	if err := opts.Store.SetImageBigData(image.ID, "manifest", manifestData, manifestDigestFunc); err != nil {
+	if err := store.SetImageBigData(image.ID, "manifest", manifestData, manifestDigestFunc); err != nil {
 		return "", fmt.Errorf("failed to store manifest: %w", err)
 	}
 	manifestKey := storage.ImageDigestManifestBigDataNamePrefix + "-" + manifestDigest.String()
-	if err := opts.Store.SetImageBigData(image.ID, manifestKey, manifestData, manifestDigestFunc); err != nil {
+	if err := store.SetImageBigData(image.ID, manifestKey, manifestData, manifestDigestFunc); err != nil {
 		return "", fmt.Errorf("failed to store manifest: %w", err)
 	}
 
@@ -141,7 +130,7 @@ func ImportDelta(opts ImportOptions, log Logger) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read config: %w", err)
 	}
-	if err := opts.Store.SetImageBigData(image.ID, delta.imageConfigDigest.String(), configData, nil); err != nil {
+	if err := store.SetImageBigData(image.ID, delta.imageConfigDigest.String(), configData, nil); err != nil {
 		return "", fmt.Errorf("failed to store config: %w", err)
 	}
 

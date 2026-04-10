@@ -14,15 +14,6 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-type CreateOptions struct {
-	OldImage    string
-	NewImage    string
-	OutputPath  string
-	TmpDir      string
-	Verbose     bool
-	Parallelism int // max concurrent tar-diff workers; 0 means GOMAXPROCS
-}
-
 type CreateStats struct {
 	OldLayers           int
 	NewLayers           int
@@ -33,22 +24,13 @@ type CreateStats struct {
 	OriginalLayerBytes  int64
 }
 
-func CreateDelta(opts CreateOptions, log Logger) (*CreateStats, error) {
+type CreateOptions struct {
+	TmpDir      string
+	Parallelism int // max concurrent tar-diff workers; 0 means GOMAXPROCS
+}
+
+func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opts CreateOptions, log Logger) (*CreateStats, error) {
 	stats := &CreateStats{}
-
-	log.Debug("Opening old image: %s", opts.OldImage)
-	oldReader, err := OpenOCIReader(opts.OldImage, opts.TmpDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open old image: %w", err)
-	}
-	defer oldReader.Close()
-
-	log.Debug("Opening new image: %s", opts.NewImage)
-	newReader, err := OpenOCIReader(opts.NewImage, opts.TmpDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open new image: %w", err)
-	}
-	defer newReader.Close()
 
 	log.Debug("Parsing old image")
 	old, err := parseOCIImage(oldReader)
@@ -213,13 +195,6 @@ func CreateDelta(opts CreateOptions, log Logger) (*CreateStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal index: %w", err)
 	}
-
-	// Write output.
-	writer, err := OpenOCIWriter(opts.OutputPath, opts.TmpDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create output: %w", err)
-	}
-	defer writer.Close()
 
 	log.Debug("\nWriting oci-layout")
 	if err := writer.WriteFile("oci-layout", ociLayoutFileData); err != nil {

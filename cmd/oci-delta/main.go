@@ -5,7 +5,6 @@ import (
 	"os"
 
 	ocidelta "github.com/containers/oci-delta/pkg/oci-delta"
-	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/reexec"
 	flag "github.com/spf13/pflag"
 )
@@ -109,16 +108,31 @@ func createCommand(args []string) error {
 	defer os.RemoveAll(tmpDir)
 
 	log := &cmdLogger{debug: *debug}
-	opts := ocidelta.CreateOptions{
-		OldImage:    fs.Arg(0),
-		NewImage:    fs.Arg(1),
-		OutputPath:  fs.Arg(2),
-		TmpDir:      tmpDir,
-		Verbose:     *verbose,
-		Parallelism: *parallelism,
-	}
 
-	stats, err := ocidelta.CreateDelta(opts, log)
+	log.Debug("Opening old image: %s", fs.Arg(0))
+	oldReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to open old image: %w", err)
+	}
+	defer oldReader.Close()
+
+	log.Debug("Opening new image: %s", fs.Arg(1))
+	newReader, err := ocidelta.OpenOCIReader(fs.Arg(1), tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to open new image: %w", err)
+	}
+	defer newReader.Close()
+
+	writer, err := ocidelta.OpenOCIWriter(fs.Arg(2), tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to create output: %w", err)
+	}
+	defer writer.Close()
+
+	stats, err := ocidelta.CreateDelta(oldReader, newReader, writer, ocidelta.CreateOptions{
+		TmpDir:      tmpDir,
+		Parallelism: *parallelism,
+	}, log)
 	if err != nil {
 		return err
 	}
@@ -192,16 +206,6 @@ func applyCommand(args []string) error {
 		return fmt.Errorf("--ostree-repo, --directory, and --container-storage are mutually exclusive")
 	}
 
-	var store storage.Store
-	if *containerStorage != "" {
-		var err error
-		store, err = ocidelta.OpenContainerStorage(*containerStorage)
-		if err != nil {
-			return err
-		}
-		defer func() { store.Shutdown(false) }()
-	}
-
 	tmpDir, err := os.MkdirTemp("/var/tmp", "oci-delta-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
@@ -209,16 +213,49 @@ func applyCommand(args []string) error {
 	defer os.RemoveAll(tmpDir)
 
 	log := &cmdLogger{debug: *debug}
-	opts := ocidelta.ApplyOptions{
-		DeltaPath:      fs.Arg(0),
-		OutputPath:     fs.Arg(1),
-		RepoPath:       *repoPath,
-		DeltaSource:    *directorySource,
-		ContainerStore: store,
-		TmpDir:         tmpDir,
-	}
 
-	return ocidelta.ApplyDelta(opts, log)
+	log.Debug("Parsing delta: %s", fs.Arg(0))
+	delta, err := ocidelta.ParseDeltaArtifact(fs.Arg(0), log)
+	if err != nil {
+		return err
+	}
+	defer delta.Close()
+
+	var dataSource ocidelta.DataSource
+	if *directorySource != "" {
+		dataSource = ocidelta.NewFilesystemDataSource(*directorySource)
+	} else if *containerStorage != "" {
+		store, err := ocidelta.OpenContainerStorage(*containerStorage)
+		if err != nil {
+			return err
+		}
+		defer func() { store.Shutdown(false) }()
+
+		dataSource, err = ocidelta.ResolveContainerStorageDataSource(store, delta.SourceConfigDigest(), log)
+		if err != nil {
+			return err
+		}
+	} else {
+		ds, err := ocidelta.ResolveOstreeDataSource(*repoPath, delta.SourceConfigDigest(), log)
+		if err != nil {
+			return err
+		}
+		dataSource = ds
+	}
+	defer func() {
+		_ = dataSource.Close()
+		_ = dataSource.Cleanup()
+	}()
+
+	writer, err := ocidelta.OpenOCIWriter(fs.Arg(1), tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to create output: %w", err)
+	}
+	defer writer.Close()
+
+	return ocidelta.ApplyDelta(delta, writer, dataSource, ocidelta.ApplyOptions{
+		TmpDir: tmpDir,
+	}, log)
 }
 
 func importCommand(args []string) error {
@@ -261,14 +298,18 @@ func importCommand(args []string) error {
 	defer os.RemoveAll(tmpDir)
 
 	log := &cmdLogger{debug: *debug}
-	opts := ocidelta.ImportOptions{
-		DeltaPath: fs.Arg(0),
-		Store:     store,
-		Tag:       *tag,
-		TmpDir:    tmpDir,
-	}
 
-	imageID, err := ocidelta.ImportDelta(opts, log)
+	log.Debug("Parsing delta: %s", fs.Arg(0))
+	delta, err := ocidelta.ParseDeltaArtifact(fs.Arg(0), log)
+	if err != nil {
+		return err
+	}
+	defer delta.Close()
+
+	imageID, err := ocidelta.ImportDelta(delta, store, ocidelta.ImportOptions{
+		Tag:    *tag,
+		TmpDir: tmpDir,
+	}, log)
 	if err != nil {
 		return err
 	}
