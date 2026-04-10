@@ -83,7 +83,7 @@ func createCommand(args []string) error {
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  <old-image>   Old image (oci-archive:path, oci:path, or containers-storage:ref)")
 		fmt.Fprintln(os.Stderr, "  <new-image>   New image (oci-archive:path, oci:path, or containers-storage:ref)")
-		fmt.Fprintln(os.Stderr, "  <output>      Output delta (oci-archive:path, oci:path, or containers-storage:ref)")
+		fmt.Fprintln(os.Stderr, "  <output>      Output delta (oci-archive:path or oci:path)")
 		fmt.Fprintln(os.Stderr, "\nIf no type prefix is given, oci-archive: is assumed.")
 		fmt.Fprintln(os.Stderr, "\nOptions:")
 		fs.PrintDefaults()
@@ -123,18 +123,21 @@ func createCommand(args []string) error {
 	}
 	defer newReader.Close()
 
-	writer, err := ocidelta.OpenOCIWriter(fs.Arg(2), tmpDir)
+	writer, err := ocidelta.OpenOCIWriter(fs.Arg(2))
 	if err != nil {
 		return fmt.Errorf("failed to create output: %w", err)
 	}
-	defer writer.Close()
 
 	stats, err := ocidelta.CreateDelta(oldReader, newReader, writer, ocidelta.CreateOptions{
 		TmpDir:      tmpDir,
 		Parallelism: *parallelism,
 	}, log)
 	if err != nil {
+		writer.Close()
 		return err
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("failed to write output: %w", err)
 	}
 
 	if *verbose && stats != nil {
@@ -168,7 +171,7 @@ func applyCommand(args []string) error {
 		fmt.Fprintln(os.Stderr, "\nApply a delta to reconstruct a full OCI image.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  <delta-file>  Path to the delta file")
-		fmt.Fprintln(os.Stderr, "  <output>      Output image (oci-archive:path, oci:path, or containers-storage:ref)")
+		fmt.Fprintln(os.Stderr, "  <output>      Output image (oci-archive:path or oci:path)")
 		fmt.Fprintln(os.Stderr, "\nIf no type prefix is given, oci-archive: is assumed.")
 		fmt.Fprintln(os.Stderr, "\nOptions:")
 		fs.PrintDefaults()
@@ -247,15 +250,18 @@ func applyCommand(args []string) error {
 		_ = dataSource.Cleanup()
 	}()
 
-	writer, err := ocidelta.OpenOCIWriter(fs.Arg(1), tmpDir)
+	writer, err := ocidelta.OpenOCIWriter(fs.Arg(1))
 	if err != nil {
 		return fmt.Errorf("failed to create output: %w", err)
 	}
-	defer writer.Close()
 
-	return ocidelta.ApplyDelta(delta, writer, dataSource, ocidelta.ApplyOptions{
+	if err := ocidelta.ApplyDelta(delta, writer, dataSource, ocidelta.ApplyOptions{
 		TmpDir: tmpDir,
-	}, log)
+	}, log); err != nil {
+		writer.Close()
+		return err
+	}
+	return writer.Close()
 }
 
 func importCommand(args []string) error {

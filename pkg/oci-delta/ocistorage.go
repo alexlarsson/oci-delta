@@ -38,10 +38,7 @@ func OpenOCIReader(ref string, tmpDir string) (OCIReader, error) {
 	return indexTarArchive(ref)
 }
 
-func OpenOCIWriter(ref string, tmpDir string) (OCIWriter, error) {
-	if strings.HasPrefix(ref, "containers-storage:") {
-		return newCSWriter(ref, tmpDir)
-	}
+func OpenOCIWriter(ref string) (OCIWriter, error) {
 	if strings.HasPrefix(ref, "oci-archive:") {
 		return newTarOCIWriter(ref[len("oci-archive:"):])
 	}
@@ -291,39 +288,6 @@ func (r *csOCIReader) Close() error {
 	return os.RemoveAll(r.tmpDir)
 }
 
-// csOCIWriter — container storage backed OCIWriter (via temp OCI directory)
-
-type csOCIWriter struct {
-	*dirOCIWriter
-	ref string
-}
-
-func newCSWriter(ref string, tmpDir string) (*csOCIWriter, error) {
-	ociDir, err := os.MkdirTemp(tmpDir, "cs-writer-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir: %w", err)
-	}
-
-	dirWriter, err := newDirOCIWriter(ociDir)
-	if err != nil {
-		os.RemoveAll(ociDir)
-		return nil, err
-	}
-
-	return &csOCIWriter{
-		dirOCIWriter: dirWriter,
-		ref:          ref,
-	}, nil
-}
-
-func (w *csOCIWriter) Close() error {
-	if err := w.dirOCIWriter.Close(); err != nil {
-		return err
-	}
-	defer os.RemoveAll(w.dir)
-
-	return copyImage(context.Background(), "oci:"+w.dir, w.ref)
-}
 
 func copyImage(ctx context.Context, srcName, destName string) error {
 	srcRef, err := alltransports.ParseImageName(srcName)
