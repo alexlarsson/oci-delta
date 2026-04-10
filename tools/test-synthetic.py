@@ -159,8 +159,9 @@ def get_layer_digests(archive_path: str) -> list:
         return [l['digest'] for l in manifest['layers']]
 
 
-def extract_ostree_objects(archive_path: str, dest_dir: str) -> None:
-    """Extract sysroot/ostree/repo/objects/ from all layers into dest_dir."""
+def extract_layer_files(archive_path: str, dest_dir: str) -> None:
+    """Extract all files from all layers into dest_dir, resolving hardlinks."""
+    hardlink_targets = {}
     with tarfile.open(archive_path, 'r') as outer:
         index = json.load(outer.extractfile('index.json'))
         mh = index['manifests'][0]['digest'].split(':')[1]
@@ -171,11 +172,21 @@ def extract_ostree_objects(archive_path: str, dest_dir: str) -> None:
             layer_bytes = gzip.decompress(layer_gz)
             with tarfile.open(fileobj=io.BytesIO(layer_bytes), mode='r') as lt:
                 for member in lt.getmembers():
-                    if member.isfile() and member.name.startswith('sysroot/ostree/repo/objects/'):
+                    if member.isfile():
                         dest = os.path.join(dest_dir, member.name)
                         os.makedirs(os.path.dirname(dest), exist_ok=True)
-                        with lt.extractfile(member) as f, open(dest, 'wb') as out:
-                            out.write(f.read())
+                        with lt.extractfile(member) as f:
+                            data = f.read()
+                        with open(dest, 'wb') as out:
+                            out.write(data)
+                        hardlink_targets[member.name] = data
+                    elif member.islnk():
+                        data = hardlink_targets.get(member.linkname)
+                        if data is not None:
+                            dest = os.path.join(dest_dir, member.name)
+                            os.makedirs(os.path.dirname(dest), exist_ok=True)
+                            with open(dest, 'wb') as out:
+                                out.write(data)
 
 
 # --- Test harness ---
@@ -343,7 +354,7 @@ def main():
         # ---- Test 3: apply reconstructs correct diff_ids ----
         print("\n[Test 3] Apply: reconstructed archive has correct diff_ids")
         os.makedirs(delta_source)
-        extract_ostree_objects(old_img, delta_source)
+        extract_layer_files(old_img, delta_source)
         run([str(oci_delta), 'apply',
              f'--delta-source={delta_source}', delta, reconstructed])
 
