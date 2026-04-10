@@ -6,6 +6,7 @@ import (
 
 	ocidelta "github.com/containers/oci-delta/pkg/oci-delta"
 	"github.com/containers/storage/pkg/reexec"
+	"github.com/containers/storage/pkg/unshare"
 	flag "github.com/spf13/pflag"
 )
 
@@ -27,6 +28,7 @@ func main() {
 	if reexec.Init() {
 		return
 	}
+	unshare.MaybeReexecUsingUserNamespace(false)
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "oci-delta - Create and apply OCI image deltas\n\n")
