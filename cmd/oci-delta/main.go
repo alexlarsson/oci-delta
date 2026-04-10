@@ -217,9 +217,16 @@ func applyCommand(args []string) error {
 
 	log := &cmdLogger{debug: *debug}
 
-	log.Debug("Parsing delta: %s", fs.Arg(0))
-	delta, err := ocidelta.ParseDeltaArtifact(fs.Arg(0), log)
+	log.Debug("Opening delta: %s", fs.Arg(0))
+	deltaReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir)
 	if err != nil {
+		return fmt.Errorf("failed to open delta: %w", err)
+	}
+
+	log.Debug("Parsing delta...")
+	delta, err := ocidelta.ParseDeltaArtifact(deltaReader, log)
+	if err != nil {
+		deltaReader.Close()
 		return err
 	}
 	defer delta.Close()
@@ -305,9 +312,16 @@ func importCommand(args []string) error {
 
 	log := &cmdLogger{debug: *debug}
 
-	log.Debug("Parsing delta: %s", fs.Arg(0))
-	delta, err := ocidelta.ParseDeltaArtifact(fs.Arg(0), log)
+	log.Debug("Opening delta: %s", fs.Arg(0))
+	deltaReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir)
 	if err != nil {
+		return fmt.Errorf("failed to open delta: %w", err)
+	}
+
+	log.Debug("Parsing delta...")
+	delta, err := ocidelta.ParseDeltaArtifact(deltaReader, log)
+	if err != nil {
+		deltaReader.Close()
 		return err
 	}
 	defer delta.Close()

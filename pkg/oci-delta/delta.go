@@ -21,7 +21,7 @@ const (
 )
 
 type DeltaArtifact struct {
-	tarIndex            *TarIndex
+	reader              OCIReader
 	imageManifest       v1.Manifest
 	imageConfig         v1.Image
 	imageManifestDigest digest.Digest
@@ -30,42 +30,31 @@ type DeltaArtifact struct {
 	deltaLayerByTo      map[digest.Digest]v1.Descriptor
 }
 
-func ParseDeltaArtifact(path string, log Logger) (*DeltaArtifact, error) {
-	tarIndex, err := indexTarArchive(path)
+func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
+	indexData, err := readAll(reader, "index.json")
 	if err != nil {
-		return nil, fmt.Errorf("failed to index delta file: %w", err)
-	}
-
-	indexData, err := readAll(tarIndex, "index.json")
-	if err != nil {
-		tarIndex.Close()
-		return nil, fmt.Errorf("delta archive does not contain index.json")
+		return nil, fmt.Errorf("delta does not contain index.json")
 	}
 	var ociIndex v1.Index
 	if err := json.Unmarshal(indexData, &ociIndex); err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to parse index.json: %w", err)
 	}
 	if len(ociIndex.Manifests) == 0 {
-		tarIndex.Close()
-		return nil, fmt.Errorf("delta archive contains no manifests")
+		return nil, fmt.Errorf("delta contains no manifests")
 	}
 
 	deltaManifestDigest := ociIndex.Manifests[0].Digest
 	log.Debug("  Delta manifest: %s", deltaManifestDigest.Encoded()[:16])
 
-	deltaManifestData, err := readAll(tarIndex, blobTarName(deltaManifestDigest))
+	deltaManifestData, err := readAll(reader, blobTarName(deltaManifestDigest))
 	if err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to read delta manifest: %w", err)
 	}
 	var deltaManifest v1.Manifest
 	if err := json.Unmarshal(deltaManifestData, &deltaManifest); err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to parse delta manifest: %w", err)
 	}
 	if deltaManifest.ArtifactType != mediaTypeDelta {
-		tarIndex.Close()
 		return nil, fmt.Errorf("not a delta artifact (artifactType: %s)", deltaManifest.ArtifactType)
 	}
 
@@ -94,40 +83,34 @@ func ParseDeltaArtifact(path string, log Logger) (*DeltaArtifact, error) {
 		}
 	}
 	if imageManifestDesc == nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("delta manifest contains no embedded image manifest layer")
 	}
 	if imageConfigDesc == nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("delta manifest contains no embedded image config layer")
 	}
 
-	imageManifestData, err := readAll(tarIndex, blobTarName(imageManifestDesc.Digest))
+	imageManifestData, err := readAll(reader, blobTarName(imageManifestDesc.Digest))
 	if err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to read embedded image manifest: %w", err)
 	}
 	var imageManifest v1.Manifest
 	if err := json.Unmarshal(imageManifestData, &imageManifest); err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to parse embedded image manifest: %w", err)
 	}
 	log.Debug("  Image manifest: %s (%d layers)", imageManifestDesc.Digest.Encoded()[:16], len(imageManifest.Layers))
 
-	imageConfigData, err := readAll(tarIndex, blobTarName(imageConfigDesc.Digest))
+	imageConfigData, err := readAll(reader, blobTarName(imageConfigDesc.Digest))
 	if err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to read embedded image config: %w", err)
 	}
 	var imageConfig v1.Image
 	if err := json.Unmarshal(imageConfigData, &imageConfig); err != nil {
-		tarIndex.Close()
 		return nil, fmt.Errorf("failed to parse embedded image config: %w", err)
 	}
 	log.Debug("  Image config: %s (%d diff_ids)", imageConfigDesc.Digest.Encoded()[:16], len(imageConfig.RootFS.DiffIDs))
 
 	return &DeltaArtifact{
-		tarIndex:            tarIndex,
+		reader:              reader,
 		imageManifest:       imageManifest,
 		imageConfig:         imageConfig,
 		imageManifestDigest: imageManifestDesc.Digest,
@@ -138,7 +121,7 @@ func ParseDeltaArtifact(path string, log Logger) (*DeltaArtifact, error) {
 }
 
 func (d *DeltaArtifact) Close() error {
-	return d.tarIndex.Close()
+	return d.reader.Close()
 }
 
 func (d *DeltaArtifact) SourceConfigDigest() string {
@@ -146,16 +129,16 @@ func (d *DeltaArtifact) SourceConfigDigest() string {
 }
 
 func (d *DeltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {
-	return readAll(d.tarIndex, blobTarName(dgst))
+	return readAll(d.reader, blobTarName(dgst))
 }
 
 func (d *DeltaArtifact) GetBlobReader(dgst digest.Digest) (io.ReadSeekCloser, error) {
-	r, _, err := d.tarIndex.ReadFile(blobTarName(dgst))
+	r, _, err := d.reader.ReadFile(blobTarName(dgst))
 	return r, err
 }
 
 func (d *DeltaArtifact) GetBlobSize(dgst digest.Digest) (int64, error) {
-	r, size, err := d.tarIndex.ReadFile(blobTarName(dgst))
+	r, size, err := d.reader.ReadFile(blobTarName(dgst))
 	if err != nil {
 		return 0, err
 	}

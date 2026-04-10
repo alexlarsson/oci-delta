@@ -28,7 +28,7 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 	}
 
 	// Write image config blob (unchanged).
-	if err := writeBlob(writer, delta.tarIndex, delta.imageConfigDigest); err != nil {
+	if err := writeBlob(writer, delta.reader, delta.imageConfigDigest); err != nil {
 		return fmt.Errorf("failed to write image config: %w", err)
 	}
 
@@ -65,7 +65,7 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 			outputLayers[i].Size = newSize
 		} else {
 			log.Debug("  Layer %s: copying original (%d bytes)", layer.Digest.Encoded()[:16], deltaLayer.Size)
-			if err := writeBlob(writer, delta.tarIndex, layer.Digest); err != nil {
+			if err := writeBlob(writer, delta.reader, layer.Digest); err != nil {
 				return fmt.Errorf("failed to copy layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
 		}
