@@ -356,7 +356,7 @@ def main():
         os.makedirs(delta_source)
         extract_layer_files(old_img, delta_source)
         run([str(oci_delta), 'apply',
-             f'--delta-source={delta_source}', delta, reconstructed])
+             f'--directory={delta_source}', delta, reconstructed])
 
         expected_diff_ids = get_diff_ids(new_img)
         actual_diff_ids   = get_diff_ids(reconstructed)
