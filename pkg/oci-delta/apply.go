@@ -160,9 +160,9 @@ func ApplyDelta(opts ApplyOptions, log Logger) error {
 	return nil
 }
 
-func writeBlob(w OCIWriter, store BlobStore, d digest.Digest) error {
+func writeBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
 	name := blobTarName(d)
-	r, size, err := store.ReadFile(name)
+	r, size, err := reader.ReadFile(name)
 	if err != nil {
 		return err
 	}

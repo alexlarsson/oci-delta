@@ -21,7 +21,7 @@ type Logger interface {
 
 var ociLayoutFileData = []byte(`{"imageLayoutVersion":"1.0.0"}`)
 
-type BlobStore interface {
+type OCIReader interface {
 	ReadFile(name string) (io.ReadSeekCloser, int64, error)
 	Close() error
 }
@@ -32,15 +32,15 @@ type readSeekNopCloser struct {
 
 func (readSeekNopCloser) Close() error { return nil }
 
-type DirBlobStore struct {
+type DirOCIReader struct {
 	dir string
 }
 
-func NewDirBlobStore(dir string) *DirBlobStore {
-	return &DirBlobStore{dir: dir}
+func NewDirOCIReader(dir string) *DirOCIReader {
+	return &DirOCIReader{dir: dir}
 }
 
-func (d *DirBlobStore) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
+func (d *DirOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 	f, err := os.Open(d.dir + "/" + name)
 	if err != nil {
 		return nil, 0, err
@@ -53,7 +53,7 @@ func (d *DirBlobStore) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 	return f, info.Size(), nil
 }
 
-func (d *DirBlobStore) Close() error {
+func (d *DirOCIReader) Close() error {
 	return nil
 }
 
@@ -161,12 +161,12 @@ func OpenOCIWriter(ref string) (OCIWriter, error) {
 	return newTarOCIWriter(ref)
 }
 
-func OpenBlobStore(ref string) (BlobStore, error) {
+func OpenOCIReader(ref string) (OCIReader, error) {
 	if strings.HasPrefix(ref, "oci-archive:") {
 		return indexTarArchive(ref[len("oci-archive:"):])
 	}
 	if strings.HasPrefix(ref, "oci:") {
-		return NewDirBlobStore(ref[len("oci:"):]), nil
+		return NewDirOCIReader(ref[len("oci:"):]), nil
 	}
 	return indexTarArchive(ref)
 }
@@ -194,7 +194,7 @@ type OCIImage struct {
 	layers         []OCILayer
 	layerByDigest  map[digest.Digest]*OCILayer
 	layerByDiffID  map[digest.Digest]*OCILayer
-	blobStore      BlobStore
+	reader      OCIReader
 }
 
 type offsetTracker struct {
@@ -266,8 +266,8 @@ func (idx *TarIndex) Close() error {
 	return nil
 }
 
-func readAllFromStore(store BlobStore, name string) ([]byte, error) {
-	r, _, err := store.ReadFile(name)
+func readAll(reader OCIReader, name string) ([]byte, error) {
+	r, _, err := reader.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}
@@ -275,8 +275,8 @@ func readAllFromStore(store BlobStore, name string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-func parseOCIImage(blobStore BlobStore) (*OCIImage, error) {
-	indexData, err := readAllFromStore(blobStore, "index.json")
+func parseOCIImage(reader OCIReader) (*OCIImage, error) {
+	indexData, err := readAll(reader, "index.json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read index.json: %w", err)
 	}
@@ -298,7 +298,7 @@ func parseOCIImage(blobStore BlobStore) (*OCIImage, error) {
 		return nil, fmt.Errorf("OCI archive contains multiple manifests (%d), only single-image archives are supported", len(index.Manifests))
 	}
 
-	manifestData, err := readAllFromStore(blobStore, blobTarName(manifestDesc.Digest))
+	manifestData, err := readAll(reader, blobTarName(manifestDesc.Digest))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest: %w", err)
 	}
@@ -312,7 +312,7 @@ func parseOCIImage(blobStore BlobStore) (*OCIImage, error) {
 		return nil, fmt.Errorf("manifest has no config digest")
 	}
 
-	configData, err := readAllFromStore(blobStore, blobTarName(manifest.Config.Digest))
+	configData, err := readAll(reader, blobTarName(manifest.Config.Digest))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
@@ -344,7 +344,7 @@ func parseOCIImage(blobStore BlobStore) (*OCIImage, error) {
 		layers:         layers,
 		layerByDigest:  layerByDigest,
 		layerByDiffID:  layerByDiffID,
-		blobStore:      blobStore,
+		reader:      reader,
 	}, nil
 }
 

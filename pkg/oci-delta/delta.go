@@ -37,7 +37,7 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 		return nil, fmt.Errorf("failed to index delta file: %w", err)
 	}
 
-	indexData, err := readAllFromStore(tarIndex, "index.json")
+	indexData, err := readAll(tarIndex, "index.json")
 	if err != nil {
 		tarIndex.Close()
 		return nil, fmt.Errorf("delta archive does not contain index.json")
@@ -55,7 +55,7 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 	deltaManifestDigest := ociIndex.Manifests[0].Digest
 	log.Debug("  Delta manifest: %s", deltaManifestDigest.Encoded()[:16])
 
-	deltaManifestData, err := readAllFromStore(tarIndex, blobTarName(deltaManifestDigest))
+	deltaManifestData, err := readAll(tarIndex, blobTarName(deltaManifestDigest))
 	if err != nil {
 		tarIndex.Close()
 		return nil, fmt.Errorf("failed to read delta manifest: %w", err)
@@ -103,7 +103,7 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 		return nil, fmt.Errorf("delta manifest contains no embedded image config layer")
 	}
 
-	imageManifestData, err := readAllFromStore(tarIndex, blobTarName(imageManifestDesc.Digest))
+	imageManifestData, err := readAll(tarIndex, blobTarName(imageManifestDesc.Digest))
 	if err != nil {
 		tarIndex.Close()
 		return nil, fmt.Errorf("failed to read embedded image manifest: %w", err)
@@ -115,7 +115,7 @@ func parseDeltaArtifact(path string, log Logger) (*deltaArtifact, error) {
 	}
 	log.Debug("  Image manifest: %s (%d layers)", imageManifestDesc.Digest.Encoded()[:16], len(imageManifest.Layers))
 
-	imageConfigData, err := readAllFromStore(tarIndex, blobTarName(imageConfigDesc.Digest))
+	imageConfigData, err := readAll(tarIndex, blobTarName(imageConfigDesc.Digest))
 	if err != nil {
 		tarIndex.Close()
 		return nil, fmt.Errorf("failed to read embedded image config: %w", err)
@@ -143,7 +143,7 @@ func (d *deltaArtifact) Close() error {
 }
 
 func (d *deltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {
-	return readAllFromStore(d.tarIndex, blobTarName(dgst))
+	return readAll(d.tarIndex, blobTarName(dgst))
 }
 
 func (d *deltaArtifact) GetBlobReader(dgst digest.Digest) (io.ReadSeekCloser, error) {
