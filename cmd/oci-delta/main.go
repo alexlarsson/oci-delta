@@ -1,13 +1,13 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
 	ocidelta "github.com/containers/oci-delta/pkg/oci-delta"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/reexec"
+	flag "github.com/spf13/pflag"
 )
 
 type cmdLogger struct {
@@ -37,31 +37,31 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  create    Create a delta between two OCI images\n")
 		fmt.Fprintf(os.Stderr, "  apply     Apply a delta to create a standard OCI archive\n")
 		fmt.Fprintf(os.Stderr, "  import    Apply a delta and import the result into container storage\n\n")
-		fmt.Fprintf(os.Stderr, "Run 'oci-delta <subcommand> -h' for subcommand-specific options.\n")
+		fmt.Fprintf(os.Stderr, "Run 'oci-delta <subcommand> --help' for subcommand-specific options.\n")
 	}
 
-	flag.Parse()
+	args := os.Args[1:]
 
-	if flag.NArg() < 1 {
+	if len(args) < 1 {
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	subcommand := flag.Arg(0)
+	subcommand := args[0]
 
 	switch subcommand {
 	case "create":
-		if err := createCommand(flag.Args()[1:]); err != nil {
+		if err := createCommand(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "apply":
-		if err := applyCommand(flag.Args()[1:]); err != nil {
+		if err := applyCommand(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "import":
-		if err := importCommand(flag.Args()[1:]); err != nil {
+		if err := importCommand(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -74,10 +74,9 @@ func main() {
 
 func createCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta create", flag.ContinueOnError)
-	verbose := fs.Bool("verbose", false, "show statistics after creation")
-	fs.BoolVar(verbose, "v", false, "show statistics after creation (shorthand)")
+	verbose := fs.BoolP("verbose", "v", false, "show statistics after creation")
 	debug := fs.Bool("debug", false, "show detailed progress information")
-	parallelism := fs.Int("j", 0, "max parallel tar-diff workers (default: number of CPUs)")
+	parallelism := fs.IntP("jobs", "j", 0, "max parallel tar-diff workers (default: number of CPUs)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: oci-delta create [OPTIONS] <old-image> <new-image> <output>")
@@ -146,8 +145,8 @@ func createCommand(args []string) error {
 func applyCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta apply", flag.ContinueOnError)
 	repoPath := fs.String("ostree-repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
-	deltaSource := fs.String("delta-source", "", "source directory for delta reconstruction (alternative to -repo)")
-	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to -repo)")
+	deltaSource := fs.String("delta-source", "", "source directory for delta reconstruction (alternative to --ostree-repo)")
+	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to --ostree-repo)")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -190,7 +189,7 @@ func applyCommand(args []string) error {
 		sourceCount++
 	}
 	if sourceCount > 1 {
-		return fmt.Errorf("-repo, -delta-source, and -container-storage are mutually exclusive")
+		return fmt.Errorf("--ostree-repo, --delta-source, and --container-storage are mutually exclusive")
 	}
 
 	var store storage.Store
@@ -225,7 +224,7 @@ func applyCommand(args []string) error {
 func importCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta import", flag.ContinueOnError)
 	containerStorage := fs.String("container-storage", "", "podman container storage root (default: system default)")
-	tag := fs.String("t", "", "tag name for the imported image")
+	tag := fs.StringP("tag", "t", "", "tag name for the imported image")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
