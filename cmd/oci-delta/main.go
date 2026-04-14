@@ -78,6 +78,7 @@ func createCommand(args []string) error {
 	verbose := fs.BoolP("verbose", "v", false, "show statistics after creation")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 	parallelism := fs.IntP("jobs", "j", 0, "max parallel tar-diff workers (default: number of CPUs)")
+	signatures := fs.StringArray("signature", nil, "signature OCI artifact to embed (can be specified multiple times)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: oci-delta create [OPTIONS] <old-image> <new-image> <output>")
@@ -125,6 +126,17 @@ func createCommand(args []string) error {
 	}
 	defer newReader.Close()
 
+	var sigReaders []ocidelta.OCIReader
+	for _, sigPath := range *signatures {
+		log.Debug("Opening signature: %s", sigPath)
+		sigReader, err := ocidelta.OpenOCIReader(sigPath, tmpDir)
+		if err != nil {
+			return fmt.Errorf("failed to open signature %s: %w", sigPath, err)
+		}
+		defer sigReader.Close()
+		sigReaders = append(sigReaders, sigReader)
+	}
+
 	writer, err := ocidelta.OpenOCIWriter(fs.Arg(2))
 	if err != nil {
 		return fmt.Errorf("failed to create output: %w", err)
@@ -133,6 +145,7 @@ func createCommand(args []string) error {
 	stats, err := ocidelta.CreateDelta(oldReader, newReader, writer, ocidelta.CreateOptions{
 		TmpDir:      tmpDir,
 		Parallelism: *parallelism,
+		Signatures:  sigReaders,
 	}, log)
 	if err != nil {
 		writer.Close()

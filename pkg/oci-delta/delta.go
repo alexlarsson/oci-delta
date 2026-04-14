@@ -18,7 +18,7 @@ const (
 	annotationDeltaTo           = "io.github.containers.delta.to"
 	annotationDeltaReused       = "io.github.containers.delta.reused"
 	annotationDeltaReusedDiffID = "io.github.containers.delta.reused-diff-id"
-	annotationDeltaContent     = "io.github.containers.delta.content"
+	annotationDeltaContent      = "io.github.containers.delta.content"
 )
 
 type DeltaArtifact struct {
