@@ -101,11 +101,17 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 		MediaType: v1.MediaTypeImageManifest,
 		Digest:    imageManifestDesc.Digest,
 		Size:      int64(len(imageManifestData)),
+		Annotations: map[string]string{
+			annotationDeltaContent: "image-manifest",
+		},
 	})
 	deltaLayers = append(deltaLayers, v1.Descriptor{
 		MediaType: v1.MediaTypeImageConfig,
 		Digest:    new.manifest.Config.Digest,
 		Size:      int64(len(imageConfigData)),
+		Annotations: map[string]string{
+			annotationDeltaContent: "image-config",
+		},
 	})
 
 	var reusedDigests, reusedDiffIDs []string
@@ -120,7 +126,8 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 		stats.ProcessedLayerBytes += r.originalSize
 
 		annotations := map[string]string{
-			annotationDeltaTo: l.Digest.String(),
+			annotationDeltaContent: "image-layer",
+			annotationDeltaTo:      l.Digest.String(),
 		}
 		var desc v1.Descriptor
 		if r.diffPath != "" {

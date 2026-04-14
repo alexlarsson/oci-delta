@@ -18,6 +18,7 @@ const (
 	annotationDeltaTo           = "io.github.containers.delta.to"
 	annotationDeltaReused       = "io.github.containers.delta.reused"
 	annotationDeltaReusedDiffID = "io.github.containers.delta.reused-diff-id"
+	annotationDeltaContent     = "io.github.containers.delta.content"
 )
 
 type DeltaArtifact struct {
@@ -64,12 +65,12 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 	deltaLayerByTo := make(map[digest.Digest]v1.Descriptor)
 	for i := range deltaManifest.Layers {
 		layer := &deltaManifest.Layers[i]
-		switch layer.MediaType {
-		case v1.MediaTypeImageManifest:
+		switch layer.Annotations[annotationDeltaContent] {
+		case "image-manifest":
 			imageManifestDesc = layer
-		case v1.MediaTypeImageConfig:
+		case "image-config":
 			imageConfigDesc = layer
-		case mediaTypeTarDiff, v1.MediaTypeImageLayerGzip:
+		case "image-layer":
 			toStr := layer.Annotations[annotationDeltaTo]
 			if toStr == "" {
 				continue
