@@ -258,7 +258,7 @@ func (m *memoryReader) GetManifestDigest() (digest.Digest, error) {
 	if !ok {
 		return "", fmt.Errorf("index.json not found")
 	}
-	return parseManifestDigestFromIndex(data)
+	return parseManifestDigestFromIndex(data, "")
 }
 
 func (m *memoryReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {

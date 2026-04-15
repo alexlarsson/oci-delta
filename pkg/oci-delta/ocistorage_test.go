@@ -19,7 +19,7 @@ func createTestTar(t *testing.T, files map[string][]byte) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := newTarOCIWriter(tmp.Name())
+	w, err := newTarOCIWriter(tmp.Name(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestTarIndexReadBlob(t *testing.T) {
 	path := createTestTar(t, files)
 	defer os.Remove(path)
 
-	idx, err := indexTarArchive(path)
+	idx, err := indexTarArchive(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestTarIndexReadBlobMissing(t *testing.T) {
 	path := createTestTar(t, map[string][]byte{"a": []byte("x")})
 	defer os.Remove(path)
 
-	idx, err := indexTarArchive(path)
+	idx, err := indexTarArchive(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestTarIndexSeekable(t *testing.T) {
 	path := createTestTar(t, map[string][]byte{blobTarName(d): data})
 	defer os.Remove(path)
 
-	idx, err := indexTarArchive(path)
+	idx, err := indexTarArchive(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,14 +121,14 @@ func TestTarIndexInvalidArchive(t *testing.T) {
 	tmp.Close()
 	defer os.Remove(tmp.Name())
 
-	_, err := indexTarArchive(tmp.Name())
+	_, err := indexTarArchive(tmp.Name(), "")
 	if err == nil {
 		t.Error("expected error for invalid tar")
 	}
 }
 
 func TestTarIndexNotFound(t *testing.T) {
-	_, err := indexTarArchive("/nonexistent/path.tar")
+	_, err := indexTarArchive("/nonexistent/path.tar", "")
 	if err == nil {
 		t.Error("expected error for nonexistent file")
 	}
@@ -143,7 +143,7 @@ func TestDirOCIReaderReadBlob(t *testing.T) {
 	d := digest.FromBytes(blobContent)
 	os.WriteFile(filepath.Join(dir, "blobs", "sha256", d.Encoded()), blobContent, 0644)
 
-	reader := NewDirOCIReader(dir)
+	reader := NewDirOCIReader(dir, "")
 
 	r, size, err := reader.ReadBlob(d)
 	if err != nil {
@@ -160,7 +160,7 @@ func TestDirOCIReaderReadBlob(t *testing.T) {
 }
 
 func TestDirOCIReaderMissing(t *testing.T) {
-	reader := NewDirOCIReader(t.TempDir())
+	reader := NewDirOCIReader(t.TempDir(), "")
 	_, _, err := reader.ReadBlob(digest.FromBytes([]byte("missing")))
 	if err == nil {
 		t.Error("expected error for missing blob")
@@ -179,7 +179,7 @@ func TestTarOCIWriterRoundTrip(t *testing.T) {
 	d2 := digest.FromBytes(blob2)
 	blobs := map[digest.Digest][]byte{d1: blob1, d2: blob2}
 
-	w, err := newTarOCIWriter(tarPath)
+	w, err := newTarOCIWriter(tarPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestTarOCIWriterRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx, err := indexTarArchive(tarPath)
+	idx, err := indexTarArchive(tarPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestTarOCIWriterFromReader(t *testing.T) {
 	content := []byte("streamed content")
 	d := digest.FromBytes(content)
 
-	w, err := newTarOCIWriter(tarPath)
+	w, err := newTarOCIWriter(tarPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestTarOCIWriterFromReader(t *testing.T) {
 	}
 	w.Close()
 
-	idx, err := indexTarArchive(tarPath)
+	idx, err := indexTarArchive(tarPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestTarOCIWriterParentDirs(t *testing.T) {
 	dir := t.TempDir()
 	tarPath := filepath.Join(dir, "test.tar")
 
-	w, err := newTarOCIWriter(tarPath)
+	w, err := newTarOCIWriter(tarPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestTarOCIWriterParentDirs(t *testing.T) {
 	w.WriteFile("a/b/other.txt", []byte("shallow"))
 	w.Close()
 
-	idx, err := indexTarArchive(tarPath)
+	idx, err := indexTarArchive(tarPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestTarOCIWriterParentDirs(t *testing.T) {
 
 func TestDirOCIWriterWriteFile(t *testing.T) {
 	dir := t.TempDir()
-	w, err := newDirOCIWriter(filepath.Join(dir, "output"))
+	w, err := newDirOCIWriter(filepath.Join(dir, "output"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestDirOCIWriterWriteFile(t *testing.T) {
 
 func TestDirOCIWriterFromReader(t *testing.T) {
 	dir := t.TempDir()
-	w, err := newDirOCIWriter(filepath.Join(dir, "output"))
+	w, err := newDirOCIWriter(filepath.Join(dir, "output"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

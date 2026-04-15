@@ -229,11 +229,9 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 	ociIndex := v1.Index{
 		Versioned: specs.Versioned{SchemaVersion: 2},
 		MediaType: v1.MediaTypeImageIndex,
-		Manifests: []v1.Descriptor{{
-			MediaType: v1.MediaTypeImageManifest,
-			Digest:    deltaManifestDigest,
-			Size:      int64(len(deltaManifestData)),
-		}},
+		Manifests: []v1.Descriptor{
+			buildIndexDescriptor(v1.MediaTypeImageManifest, deltaManifestDigest, int64(len(deltaManifestData)), writer.ImageName()),
+		},
 	}
 	indexData, err := json.Marshal(ociIndex)
 	if err != nil {

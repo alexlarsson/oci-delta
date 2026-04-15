@@ -159,6 +159,20 @@ func computeDigest(data []byte) digest.Digest {
 	return digest.FromBytes(data)
 }
 
+func buildIndexDescriptor(mediaType string, dgst digest.Digest, size int64, imageName string) v1.Descriptor {
+	desc := v1.Descriptor{
+		MediaType: mediaType,
+		Digest:    dgst,
+		Size:      size,
+	}
+	if imageName != "" {
+		desc.Annotations = map[string]string{
+			v1.AnnotationRefName: imageName,
+		}
+	}
+	return desc
+}
+
 func computeFileDigest(path string) (digest.Digest, error) {
 	f, err := os.Open(path)
 	if err != nil {

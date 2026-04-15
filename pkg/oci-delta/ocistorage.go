@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	storageTransport "github.com/containers/image/v5/storage"
@@ -25,6 +26,7 @@ type OCIReader interface {
 type OCIWriter interface {
 	WriteFile(name string, data []byte) error
 	WriteFileFromReader(name string, size int64, r io.Reader) error
+	ImageName() string
 	Close() error
 }
 
@@ -48,25 +50,34 @@ func OpenOCIReader(ref string, tmpDir string, log Logger) (OCIReader, error) {
 		return reader, nil
 	}
 	if strings.HasPrefix(ref, "oci-archive:") {
-		return indexTarArchive(ref[len("oci-archive:"):])
+		path, imageName := splitOCIRef(ref[len("oci-archive:"):])
+		return indexTarArchive(path, imageName)
 	}
 	if strings.HasPrefix(ref, "oci:") {
-		return NewDirOCIReader(ref[len("oci:"):]), nil
+		path, imageName := splitOCIRef(ref[len("oci:"):])
+		return NewDirOCIReader(path, imageName), nil
 	}
-	return indexTarArchive(ref)
+	return indexTarArchive(ref, "")
 }
 
 func OpenOCIWriter(ref string) (OCIWriter, error) {
 	if strings.HasPrefix(ref, "oci-archive:") {
-		return newTarOCIWriter(ref[len("oci-archive:"):])
+		path, imageName := splitOCIRef(ref[len("oci-archive:"):])
+		return newTarOCIWriter(path, imageName)
 	}
 	if strings.HasPrefix(ref, "oci:") {
-		return newDirOCIWriter(ref[len("oci:"):])
+		path, imageName := splitOCIRef(ref[len("oci:"):])
+		return newDirOCIWriter(path, imageName)
 	}
-	return newTarOCIWriter(ref)
+	return newTarOCIWriter(ref, "")
 }
 
-func parseManifestDigestFromIndex(data []byte) (digest.Digest, error) {
+func splitOCIRef(ref string) (string, string) {
+	path, imageName, _ := strings.Cut(ref, ":")
+	return path, imageName
+}
+
+func parseManifestDigestFromIndex(data []byte, imageName string) (digest.Digest, error) {
 	var index v1.Index
 	if err := json.Unmarshal(data, &index); err != nil {
 		return "", fmt.Errorf("failed to parse index.json: %w", err)
@@ -74,15 +85,28 @@ func parseManifestDigestFromIndex(data []byte) (digest.Digest, error) {
 	if len(index.Manifests) == 0 {
 		return "", fmt.Errorf("index.json contains no manifests")
 	}
-	if len(index.Manifests) > 1 {
-		return "", fmt.Errorf("index.json contains multiple manifests (%d), only single-image archives are supported", len(index.Manifests))
+
+	if strings.HasPrefix(imageName, "@") {
+		idx, err := strconv.Atoi(imageName[1:])
+		if err != nil {
+			return "", fmt.Errorf("invalid source-index %q: %w", imageName, err)
+		}
+		if idx >= len(index.Manifests) {
+			return "", fmt.Errorf("index.json contains %d manifest(s), index %d out of range", len(index.Manifests), idx)
+		}
+		return index.Manifests[idx].Digest, nil
 	}
-	desc := index.Manifests[0]
-	if desc.MediaType == v1.MediaTypeImageIndex ||
-		desc.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
-		return "", fmt.Errorf("index.json contains a manifest list, only single-image archives are supported")
+
+	if imageName != "" {
+		for _, desc := range index.Manifests {
+			if desc.Annotations[v1.AnnotationRefName] == imageName {
+				return desc.Digest, nil
+			}
+		}
+		return "", fmt.Errorf("no manifest with ref.name %q found in index.json", imageName)
 	}
-	return desc.Digest, nil
+
+	return index.Manifests[0].Digest, nil
 }
 
 func readBlob(reader OCIReader, d digest.Digest) ([]byte, error) {
@@ -97,8 +121,9 @@ func readBlob(reader OCIReader, d digest.Digest) ([]byte, error) {
 // TarIndex — tar archive backed OCIReader
 
 type TarIndex struct {
-	file    *os.File
-	entries map[string]*TarEntry
+	file      *os.File
+	entries   map[string]*TarEntry
+	imageName string
 }
 
 type TarEntry struct {
@@ -123,7 +148,7 @@ func (ot *offsetTracker) Read(p []byte) (n int, err error) {
 	return
 }
 
-func indexTarArchive(path string) (*TarIndex, error) {
+func indexTarArchive(path string, imageName string) (*TarIndex, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -157,8 +182,9 @@ func indexTarArchive(path string) (*TarIndex, error) {
 	}
 
 	return &TarIndex{
-		file:    f,
-		entries: entries,
+		file:      f,
+		entries:   entries,
+		imageName: imageName,
 	}, nil
 }
 
@@ -171,7 +197,7 @@ func (idx *TarIndex) GetManifestDigest() (digest.Digest, error) {
 	if _, err := idx.file.ReadAt(data, entry.offset); err != nil {
 		return "", fmt.Errorf("failed to read index.json: %w", err)
 	}
-	return parseManifestDigestFromIndex(data)
+	return parseManifestDigestFromIndex(data, idx.imageName)
 }
 
 func (idx *TarIndex) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
@@ -193,11 +219,12 @@ func (idx *TarIndex) Close() error {
 // DirOCIReader — directory backed OCIReader
 
 type DirOCIReader struct {
-	dir string
+	dir       string
+	imageName string
 }
 
-func NewDirOCIReader(dir string) *DirOCIReader {
-	return &DirOCIReader{dir: dir}
+func NewDirOCIReader(dir string, imageName string) *DirOCIReader {
+	return &DirOCIReader{dir: dir, imageName: imageName}
 }
 
 func (d *DirOCIReader) GetManifestDigest() (digest.Digest, error) {
@@ -205,7 +232,7 @@ func (d *DirOCIReader) GetManifestDigest() (digest.Digest, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read index.json: %w", err)
 	}
-	return parseManifestDigestFromIndex(data)
+	return parseManifestDigestFromIndex(data, d.imageName)
 }
 
 func (d *DirOCIReader) ReadBlob(dgst digest.Digest) (io.ReadSeekCloser, int64, error) {
@@ -228,19 +255,22 @@ func (d *DirOCIReader) Close() error {
 // tarOCIWriter — tar archive backed OCIWriter
 
 type tarOCIWriter struct {
-	file *os.File
-	tw   *tar.Writer
-	dirs map[string]bool
+	file      *os.File
+	tw        *tar.Writer
+	dirs      map[string]bool
+	imageName string
 }
 
-func newTarOCIWriter(path string) (*tarOCIWriter, error) {
+func newTarOCIWriter(path string, imageName string) (*tarOCIWriter, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
 	}
 	tw := tar.NewWriter(f)
-	return &tarOCIWriter{file: f, tw: tw, dirs: make(map[string]bool)}, nil
+	return &tarOCIWriter{file: f, tw: tw, dirs: make(map[string]bool), imageName: imageName}, nil
 }
+
+func (w *tarOCIWriter) ImageName() string { return w.imageName }
 
 func (w *tarOCIWriter) ensureParentDirs(name string) error {
 	parts := strings.Split(name, "/")
@@ -281,15 +311,18 @@ func (w *tarOCIWriter) Close() error {
 // dirOCIWriter — directory backed OCIWriter
 
 type dirOCIWriter struct {
-	dir string
+	dir       string
+	imageName string
 }
 
-func newDirOCIWriter(dir string) (*dirOCIWriter, error) {
+func newDirOCIWriter(dir string, imageName string) (*dirOCIWriter, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	return &dirOCIWriter{dir: dir}, nil
+	return &dirOCIWriter{dir: dir, imageName: imageName}, nil
 }
+
+func (w *dirOCIWriter) ImageName() string { return w.imageName }
 
 func (w *dirOCIWriter) WriteFile(name string, data []byte) error {
 	path := filepath.Join(w.dir, name)
