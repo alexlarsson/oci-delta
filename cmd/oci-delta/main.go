@@ -128,7 +128,7 @@ func createCommand(args []string) error {
 	}
 	defer newReader.Close()
 
-	var sigReaders []ocidelta.OCIReader
+	sigReaders := ocidelta.ExtractedSignatures(newReader)
 	for _, sigPath := range *signatures {
 		log.Debug("Opening signature: %s", sigPath)
 		sigReader, err := ocidelta.OpenOCIReader(sigPath, tmpDir, log)

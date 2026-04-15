@@ -310,6 +310,27 @@ func (w *dirOCIWriter) Close() error {
 	return nil
 }
 
+// memOCIReader — in-memory OCIReader
+
+type memOCIReader struct {
+	manifestDigest digest.Digest
+	blobs          map[digest.Digest][]byte
+}
+
+func (m *memOCIReader) GetManifestDigest() (digest.Digest, error) {
+	return m.manifestDigest, nil
+}
+
+func (m *memOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+	data, ok := m.blobs[d]
+	if !ok {
+		return nil, 0, fmt.Errorf("blob not found: %s", d)
+	}
+	return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
+}
+
+func (m *memOCIReader) Close() error { return nil }
+
 // csOCIReader — container storage backed OCIReader
 //
 // Reads the original manifest and config from container storage big data,
@@ -323,6 +344,7 @@ type csOCIReader struct {
 	files          map[string][]byte // in-memory blobs (manifest, config)
 	layerFiles     map[string]string // digest path -> temp file path
 	tmpDir         string
+	signatures     []OCIReader
 	store          storage.Store
 }
 
@@ -405,6 +427,16 @@ func newCSReader(store storage.Store, imageRef string, tmpDir string, log Logger
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
+	var sigs []OCIReader
+	extracted, err := ExtractContainerStorageSignatures(store, img.ID, log)
+	if err != nil {
+		if log != nil {
+			log.Debug("Could not extract signatures: %v", err)
+		}
+	} else {
+		sigs = extracted
+	}
+
 	layerFiles, err := exportStorageLayers(store, &manifest, config.RootFS.DiffIDs, exportDir, log)
 	if err != nil {
 		os.RemoveAll(exportDir)
@@ -421,6 +453,7 @@ func newCSReader(store storage.Store, imageRef string, tmpDir string, log Logger
 		files:          files,
 		layerFiles:     layerFiles,
 		tmpDir:         exportDir,
+		signatures:     sigs,
 		store:          store,
 	}, nil
 }
@@ -452,5 +485,12 @@ func (r *csOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error
 func (r *csOCIReader) Close() error {
 	os.RemoveAll(r.tmpDir)
 	r.store.Shutdown(false)
+	return nil
+}
+
+func ExtractedSignatures(reader OCIReader) []OCIReader {
+	if cs, ok := reader.(*csOCIReader); ok {
+		return cs.signatures
+	}
 	return nil
 }
