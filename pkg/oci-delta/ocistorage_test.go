@@ -348,7 +348,7 @@ func TestOpenOCIReaderOCIDir(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.json"), []byte("{}"), 0644)
 
-	reader, err := OpenOCIReader("oci:"+dir, t.TempDir())
+	reader, err := OpenOCIReader("oci:"+dir, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestOpenOCIReaderOCIArchive(t *testing.T) {
 	path := createTestTar(t, map[string][]byte{"index.json": []byte("{}")})
 	defer os.Remove(path)
 
-	reader, err := OpenOCIReader("oci-archive:"+path, t.TempDir())
+	reader, err := OpenOCIReader("oci-archive:"+path, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestOpenOCIReaderDefaultArchive(t *testing.T) {
 	path := createTestTar(t, map[string][]byte{"index.json": []byte("{}")})
 	defer os.Remove(path)
 
-	reader, err := OpenOCIReader(path, t.TempDir())
+	reader, err := OpenOCIReader(path, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

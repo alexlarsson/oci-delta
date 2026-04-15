@@ -115,14 +115,14 @@ func createCommand(args []string) error {
 	log := &cmdLogger{debug: *debug}
 
 	log.Debug("Opening old image: %s", fs.Arg(0))
-	oldReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir)
+	oldReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir, log)
 	if err != nil {
 		return fmt.Errorf("failed to open old image: %w", err)
 	}
 	defer oldReader.Close()
 
 	log.Debug("Opening new image: %s", fs.Arg(1))
-	newReader, err := ocidelta.OpenOCIReader(fs.Arg(1), tmpDir)
+	newReader, err := ocidelta.OpenOCIReader(fs.Arg(1), tmpDir, log)
 	if err != nil {
 		return fmt.Errorf("failed to open new image: %w", err)
 	}
@@ -131,7 +131,7 @@ func createCommand(args []string) error {
 	var sigReaders []ocidelta.OCIReader
 	for _, sigPath := range *signatures {
 		log.Debug("Opening signature: %s", sigPath)
-		sigReader, err := ocidelta.OpenOCIReader(sigPath, tmpDir)
+		sigReader, err := ocidelta.OpenOCIReader(sigPath, tmpDir, log)
 		if err != nil {
 			return fmt.Errorf("failed to open signature %s: %w", sigPath, err)
 		}
@@ -236,7 +236,7 @@ func applyCommand(args []string) error {
 	log := &cmdLogger{debug: *debug}
 
 	log.Debug("Opening delta: %s", fs.Arg(0))
-	deltaReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir)
+	deltaReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir, log)
 	if err != nil {
 		return fmt.Errorf("failed to open delta: %w", err)
 	}
@@ -343,7 +343,7 @@ func importCommand(args []string) error {
 	log := &cmdLogger{debug: *debug}
 
 	log.Debug("Opening delta: %s", fs.Arg(0))
-	deltaReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir)
+	deltaReader, err := ocidelta.OpenOCIReader(fs.Arg(0), tmpDir, log)
 	if err != nil {
 		return fmt.Errorf("failed to open delta: %w", err)
 	}

@@ -2,16 +2,18 @@ package ocidelta
 
 import (
 	"archive/tar"
-	"context"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
-	cpimage "github.com/containers/image/v5/copy"
-	"github.com/containers/image/v5/signature"
-	"github.com/containers/image/v5/transports/alltransports"
+	"github.com/containers/storage"
+	digest "github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type OCIReader interface {
@@ -25,9 +27,18 @@ type OCIWriter interface {
 	Close() error
 }
 
-func OpenOCIReader(ref string, tmpDir string) (OCIReader, error) {
+func OpenOCIReader(ref string, tmpDir string, log Logger) (OCIReader, error) {
 	if strings.HasPrefix(ref, "containers-storage:") {
-		return newCSReader(ref, tmpDir)
+		store, err := OpenContainerStorage("")
+		if err != nil {
+			return nil, fmt.Errorf("failed to open container storage: %w", err)
+		}
+		reader, err := newCSReader(store, ref[len("containers-storage:"):], tmpDir, log)
+		if err != nil {
+			store.Shutdown(false)
+			return nil, err
+		}
+		return reader, nil
 	}
 	if strings.HasPrefix(ref, "oci-archive:") {
 		return indexTarArchive(ref[len("oci-archive:"):])
@@ -260,52 +271,160 @@ func (w *dirOCIWriter) Close() error {
 	return nil
 }
 
-// csOCIReader — container storage backed OCIReader (via temp OCI directory)
+// csOCIReader — container storage backed OCIReader
+//
+// Reads the original manifest and config from container storage big data,
+// and exports layer tars to temp files. The layers are uncompressed (from
+// store.Diff), but named by their original compressed digest so that the
+// original manifest is preserved. tar-diff handles uncompressed input via
+// AutoDecompress.
 
 type csOCIReader struct {
-	*DirOCIReader
-	tmpDir string
+	files      map[string][]byte // in-memory blobs (index, manifest, config)
+	layerFiles map[string]string // digest path -> temp file path
+	tmpDir     string
+	signatures []OCIReader
+	store      storage.Store
 }
 
-func newCSReader(ref string, tmpDir string) (*csOCIReader, error) {
-	ociDir, err := os.MkdirTemp(tmpDir, "cs-reader-*")
+func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []digest.Digest, exportDir string, log Logger) (map[string]string, error) {
+	layerFiles := make(map[string]string)
+
+	for i, layerDesc := range manifest.Layers {
+		if i >= len(diffIDs) {
+			break
+		}
+		diffID := diffIDs[i]
+
+		existing, err := store.LayersByUncompressedDigest(diffID)
+		if err != nil || len(existing) == 0 {
+			return nil, fmt.Errorf("layer with diff_id %s not found in storage", diffID)
+		}
+
+		sl := existing[0]
+		diffReader, err := store.Diff(sl.Parent, sl.ID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to export layer %s: %w", diffID.Encoded()[:16], err)
+		}
+
+		layerPath := filepath.Join(exportDir, layerDesc.Digest.Encoded())
+		outFile, err := os.Create(layerPath)
+		if err != nil {
+			diffReader.Close()
+			return nil, fmt.Errorf("failed to create layer temp file: %w", err)
+		}
+
+		_, err = io.Copy(outFile, diffReader)
+		outFile.Close()
+		diffReader.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to write layer %s: %w", diffID.Encoded()[:16], err)
+		}
+
+		layerFiles[blobTarName(layerDesc.Digest)] = layerPath
+		if log != nil {
+			log.Debug("  Exported layer %d/%d %s", i+1, len(manifest.Layers), layerDesc.Digest.Encoded()[:16])
+		}
+	}
+
+	return layerFiles, nil
+}
+
+func newCSReader(store storage.Store, imageRef string, tmpDir string, log Logger) (*csOCIReader, error) {
+	img, err := resolveStorageImage(store, imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve image %s: %w", imageRef, err)
+	}
+
+	manifestData, err := store.ImageBigData(img.ID, "manifest")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest: %w", err)
+	}
+	manifestDigest := computeDigest(manifestData)
+
+	var manifest v1.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse manifest: %w", err)
+	}
+
+	if manifest.MediaType != v1.MediaTypeImageManifest {
+		return nil, fmt.Errorf("image %s has unsupported manifest type %q, only OCI manifests are supported", imageRef, manifest.MediaType)
+	}
+
+	configData, err := store.ImageBigData(img.ID, manifest.Config.Digest.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var config v1.Image
+	if err := json.Unmarshal(configData, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	exportDir, err := os.MkdirTemp(tmpDir, "cs-layers-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	if err := copyImage(context.Background(), ref, "oci:"+ociDir); err != nil {
-		os.RemoveAll(ociDir)
-		return nil, fmt.Errorf("failed to copy from container storage: %w", err)
+	layerFiles, err := exportStorageLayers(store, &manifest, config.RootFS.DiffIDs, exportDir, log)
+	if err != nil {
+		os.RemoveAll(exportDir)
+		return nil, err
 	}
 
+	files := map[string][]byte{
+		blobTarName(manifestDigest):         manifestData,
+		blobTarName(manifest.Config.Digest): configData,
+	}
+
+	indexData, _ := json.Marshal(v1.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2},
+		MediaType: v1.MediaTypeImageIndex,
+		Manifests: []v1.Descriptor{{
+			MediaType: v1.MediaTypeImageManifest,
+			Digest:    manifestDigest,
+			Size:      int64(len(manifestData)),
+		}},
+	})
+	files["index.json"] = indexData
+	files["oci-layout"] = ociLayoutFileData
+
 	return &csOCIReader{
-		DirOCIReader: NewDirOCIReader(ociDir),
-		tmpDir:       ociDir,
+		files:      files,
+		layerFiles: layerFiles,
+		tmpDir:     exportDir,
+		store:      store,
 	}, nil
 }
 
-func (r *csOCIReader) Close() error {
-	return os.RemoveAll(r.tmpDir)
+func (r *csOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
+	if data, ok := r.files[name]; ok {
+		return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
+	}
+	if path, ok := r.layerFiles[name]; ok {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, 0, err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, 0, err
+		}
+		return f, info.Size(), nil
+	}
+	return nil, 0, fmt.Errorf("file not found: %s", name)
 }
 
-func copyImage(ctx context.Context, srcName, destName string) error {
-	srcRef, err := alltransports.ParseImageName(srcName)
-	if err != nil {
-		return fmt.Errorf("invalid source reference %q: %w", srcName, err)
-	}
+func (r *csOCIReader) Close() error {
+	os.RemoveAll(r.tmpDir)
+	r.store.Shutdown(false)
+	return nil
+}
 
-	destRef, err := alltransports.ParseImageName(destName)
-	if err != nil {
-		return fmt.Errorf("invalid destination reference %q: %w", destName, err)
+func ExtractedSignatures(reader OCIReader) []OCIReader {
+	if cs, ok := reader.(*csOCIReader); ok {
+		return cs.signatures
 	}
-
-	policy := &signature.Policy{Default: []signature.PolicyRequirement{signature.NewPRInsecureAcceptAnything()}}
-	pc, err := signature.NewPolicyContext(policy)
-	if err != nil {
-		return err
-	}
-	defer pc.Destroy()
-
-	_, err = cpimage.Image(ctx, pc, destRef, srcRef, nil)
-	return err
+	return nil
 }

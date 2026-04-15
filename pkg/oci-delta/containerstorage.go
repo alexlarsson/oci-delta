@@ -7,6 +7,7 @@ import (
 	"github.com/containers/storage"
 	"github.com/containers/storage/types"
 	tarpatch "github.com/containers/tar-diff/pkg/tar-patch"
+	"github.com/distribution/reference"
 )
 
 type containerStorageDataSource struct {
@@ -88,4 +89,13 @@ func ResolveContainerStorageDataSource(store storage.Store, sourceConfigDigest s
 		store:      store,
 		imageID:    imageID,
 	}, nil
+}
+
+func resolveStorageImage(store storage.Store, imageRef string) (*storage.Image, error) {
+	named, err := reference.ParseNormalizedNamed(imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse image reference %q: %w", imageRef, err)
+	}
+	fullName := reference.TagNameOnly(named).String()
+	return store.Image(fullName)
 }
