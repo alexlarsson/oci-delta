@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto"
 	"fmt"
 	"os"
 
 	ocidelta "github.com/containers/oci-delta/pkg/oci-delta"
 	"github.com/containers/storage/pkg/reexec"
 	"github.com/containers/storage/pkg/unshare"
+	sigstoreSignature "github.com/sigstore/sigstore/pkg/signature"
 	flag "github.com/spf13/pflag"
 )
 
@@ -179,6 +181,7 @@ func applyCommand(args []string) error {
 	repoPath := fs.String("ostree-repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
 	directorySource := fs.String("directory", "", "source directory for delta reconstruction (alternative to --ostree-repo)")
 	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to --ostree-repo)")
+	verifyKey := fs.String("verify-key", "", "path to cosign public key PEM file for signature verification")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -246,6 +249,17 @@ func applyCommand(args []string) error {
 	}
 	defer delta.Close()
 
+	if *verifyKey != "" {
+		log.Debug("Verifying signature with key: %s", *verifyKey)
+		verifier, err := sigstoreSignature.LoadVerifierFromPEMFile(*verifyKey, crypto.SHA256)
+		if err != nil {
+			return fmt.Errorf("failed to load verification key %s: %w", *verifyKey, err)
+		}
+		if err := ocidelta.VerifyDeltaSignature(delta, verifier, log); err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+	}
+
 	var dataSource ocidelta.DataSource
 	if *directorySource != "" {
 		dataSource = ocidelta.NewFilesystemDataSource(*directorySource)
@@ -290,6 +304,7 @@ func importCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta import", flag.ContinueOnError)
 	containerStorage := fs.String("container-storage", "", "podman container storage root (default: system default)")
 	tag := fs.StringP("tag", "t", "", "tag name for the imported image")
+	verifyKey := fs.String("verify-key", "", "path to cosign public key PEM file for signature verification")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -340,6 +355,17 @@ func importCommand(args []string) error {
 		return err
 	}
 	defer delta.Close()
+
+	if *verifyKey != "" {
+		log.Debug("Verifying signature with key: %s", *verifyKey)
+		verifier, err := sigstoreSignature.LoadVerifierFromPEMFile(*verifyKey, crypto.SHA256)
+		if err != nil {
+			return fmt.Errorf("failed to load verification key %s: %w", *verifyKey, err)
+		}
+		if err := ocidelta.VerifyDeltaSignature(delta, verifier, log); err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+	}
 
 	imageID, err := ocidelta.ImportDelta(delta, store, ocidelta.ImportOptions{
 		Tag:    *tag,
