@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	storageTransport "github.com/containers/image/v5/storage"
 	"github.com/containers/storage"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -29,11 +30,17 @@ type OCIWriter interface {
 
 func OpenOCIReader(ref string, tmpDir string, log Logger) (OCIReader, error) {
 	if strings.HasPrefix(ref, "containers-storage:") {
-		store, err := OpenContainerStorage("")
+		csRef := ref[len("containers-storage:"):]
+		imgRef, err := storageTransport.Transport.ParseReference(csRef)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open container storage: %w", err)
+			return nil, fmt.Errorf("failed to parse container storage reference %q: %w", csRef, err)
 		}
-		reader, err := newCSReader(store, ref[len("containers-storage:"):], tmpDir, log)
+		resolvedRef, img, err := storageTransport.ResolveReference(imgRef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve image %q: %w", csRef, err)
+		}
+		store := resolvedRef.Transport().(storageTransport.StoreTransport).GetStoreIfSet()
+		reader, err := newCSReader(store, img, tmpDir, log)
 		if err != nil {
 			store.Shutdown(false)
 			return nil, err
@@ -391,12 +398,7 @@ func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []d
 	return layerFiles, nil
 }
 
-func newCSReader(store storage.Store, imageRef string, tmpDir string, log Logger) (*csOCIReader, error) {
-	img, err := resolveStorageImage(store, imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve image %s: %w", imageRef, err)
-	}
-
+func newCSReader(store storage.Store, img *storage.Image, tmpDir string, log Logger) (*csOCIReader, error) {
 	manifestData, err := store.ImageBigData(img.ID, "manifest")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest: %w", err)
@@ -409,7 +411,7 @@ func newCSReader(store storage.Store, imageRef string, tmpDir string, log Logger
 	}
 
 	if manifest.MediaType != v1.MediaTypeImageManifest {
-		return nil, fmt.Errorf("image %s has unsupported manifest type %q, only OCI manifests are supported", imageRef, manifest.MediaType)
+		return nil, fmt.Errorf("image %s has unsupported manifest type %q, only OCI manifests are supported", img.ID[:16], manifest.MediaType)
 	}
 
 	configData, err := store.ImageBigData(img.ID, manifest.Config.Digest.String())

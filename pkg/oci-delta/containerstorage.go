@@ -8,7 +8,6 @@ import (
 	"github.com/containers/storage"
 	"github.com/containers/storage/types"
 	tarpatch "github.com/containers/tar-diff/pkg/tar-patch"
-	"github.com/distribution/reference"
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -93,15 +92,6 @@ func ResolveContainerStorageDataSource(store storage.Store, sourceConfigDigest s
 		store:      store,
 		imageID:    imageID,
 	}, nil
-}
-
-func resolveStorageImage(store storage.Store, imageRef string) (*storage.Image, error) {
-	named, err := reference.ParseNormalizedNamed(imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse image reference %q: %w", imageRef, err)
-	}
-	fullName := reference.TagNameOnly(named).String()
-	return store.Image(fullName)
 }
 
 func imageHasSignatures(store storage.Store, imageID string) (bool, error) {
