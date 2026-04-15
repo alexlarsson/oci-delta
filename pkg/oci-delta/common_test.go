@@ -253,10 +253,18 @@ func newMemoryReader(files map[string][]byte) *memoryReader {
 	return &memoryReader{files: files}
 }
 
-func (m *memoryReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
-	data, ok := m.files[name]
+func (m *memoryReader) GetManifestDigest() (digest.Digest, error) {
+	data, ok := m.files["index.json"]
 	if !ok {
-		return nil, 0, fmt.Errorf("file not found: %s", name)
+		return "", fmt.Errorf("index.json not found")
+	}
+	return parseManifestDigestFromIndex(data, "")
+}
+
+func (m *memoryReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+	data, ok := m.files[blobTarName(d)]
+	if !ok {
+		return nil, 0, fmt.Errorf("blob not found: %s", d)
 	}
 	return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
 }

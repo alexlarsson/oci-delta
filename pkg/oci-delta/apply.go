@@ -88,11 +88,9 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 	outputIndex := v1.Index{
 		Versioned: specs.Versioned{SchemaVersion: 2},
 		MediaType: v1.MediaTypeImageIndex,
-		Manifests: []v1.Descriptor{{
-			MediaType: v1.MediaTypeImageManifest,
-			Digest:    outputManifestDigest,
-			Size:      int64(len(outputManifestData)),
-		}},
+		Manifests: []v1.Descriptor{
+			buildIndexDescriptor(v1.MediaTypeImageManifest, outputManifestDigest, int64(len(outputManifestData)), writer.ImageName()),
+		},
 	}
 	indexData, err := json.Marshal(outputIndex)
 	if err != nil {
@@ -108,13 +106,12 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 }
 
 func writeBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
-	name := blobTarName(d)
-	r, size, err := reader.ReadFile(name)
+	r, size, err := reader.ReadBlob(d)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	return w.WriteFileFromReader(name, size, r)
+	return w.WriteFileFromReader(blobTarName(d), size, r)
 }
 
 func writeFileFromPath(w OCIWriter, name string, filePath string) error {

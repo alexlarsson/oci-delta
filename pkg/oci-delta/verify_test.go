@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -53,17 +54,17 @@ type memReader struct {
 	blobs map[digest.Digest][]byte
 }
 
-func (m *memReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
-	d := digestFromBlobPath(name)
-	if d == "" {
-		return nil, 0, os.ErrNotExist
-	}
+func (m *memReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
 	data, ok := m.blobs[d]
 	if !ok {
 		return nil, 0, os.ErrNotExist
 	}
 	r := bytes.NewReader(data)
 	return readSeekNopCloser{r}, int64(len(data)), nil
+}
+
+func (m *memReader) GetManifestDigest() (digest.Digest, error) {
+	return "", fmt.Errorf("not supported")
 }
 
 func (m *memReader) Close() error { return nil }
