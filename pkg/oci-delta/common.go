@@ -40,7 +40,7 @@ func parseOCIImage(reader OCIReader) (*OCIImage, error) {
 		return nil, err
 	}
 
-	manifestData, err := readAll(reader, blobTarName(manifestDigest))
+	manifestData, err := readBlob(reader, manifestDigest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest: %w", err)
 	}
@@ -54,7 +54,7 @@ func parseOCIImage(reader OCIReader) (*OCIImage, error) {
 		return nil, fmt.Errorf("manifest has no config digest")
 	}
 
-	configData, err := readAll(reader, blobTarName(manifest.Config.Digest))
+	configData, err := readBlob(reader, manifest.Config.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}

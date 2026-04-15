@@ -86,11 +86,11 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 	}
 
 	// Read embedded image manifest and config data.
-	imageManifestData, err := readAll(new.reader, blobTarName(new.manifestDigest))
+	imageManifestData, err := readBlob(new.reader, new.manifestDigest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read new image manifest: %w", err)
 	}
-	imageConfigData, err := readAll(new.reader, blobTarName(new.manifest.Config.Digest))
+	imageConfigData, err := readBlob(new.reader, new.manifest.Config.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read new image config: %w", err)
 	}
@@ -318,7 +318,7 @@ func computeLayerDiffsParallel(log Logger, old *OCIImage, new *OCIImage, newOnly
 
 	var oldFiles []io.ReadSeeker
 	for _, layer := range old.layers {
-		r, _, err := old.reader.ReadFile(blobTarName(layer.Digest))
+		r, _, err := old.reader.ReadBlob(layer.Digest)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get old layer reader: %w", err)
 		}
@@ -369,7 +369,7 @@ func computeLayerDiffsParallel(log Logger, old *OCIImage, new *OCIImage, newOnly
 }
 
 func computeLayerDiff(log Logger, old *OCIImage, new *OCIImage, blobDigest digest.Digest, layerNum, total int, tmpDir string, sources *tardiff.SourceAnalysis, diffOpts *tardiff.Options) (layerDiffResult, error) {
-	sizeReader, originalSize, err := new.reader.ReadFile(blobTarName(blobDigest))
+	sizeReader, originalSize, err := new.reader.ReadBlob(blobDigest)
 	if err != nil {
 		return layerDiffResult{}, fmt.Errorf("failed to get layer size %s: %w", blobDigest.Encoded()[:16], err)
 	}
@@ -409,7 +409,7 @@ func runTarDiff(old *OCIImage, new *OCIImage, newLayerDigest digest.Digest, outp
 	var oldFiles []io.ReadSeeker
 
 	for _, layer := range old.layers {
-		r, _, err := old.reader.ReadFile(blobTarName(layer.Digest))
+		r, _, err := old.reader.ReadBlob(layer.Digest)
 		if err != nil {
 			return err
 		}
@@ -417,7 +417,7 @@ func runTarDiff(old *OCIImage, new *OCIImage, newLayerDigest digest.Digest, outp
 		oldFiles = append(oldFiles, r)
 	}
 
-	newFile, _, err := new.reader.ReadFile(blobTarName(newLayerDigest))
+	newFile, _, err := new.reader.ReadBlob(newLayerDigest)
 	if err != nil {
 		return err
 	}
@@ -445,7 +445,7 @@ func loadSignatureArtifact(reader OCIReader) (*signatureArtifact, error) {
 		return nil, fmt.Errorf("failed to read signature manifest digest: %w", err)
 	}
 
-	manifestData, err := readAll(reader, blobTarName(manifestDigest))
+	manifestData, err := readBlob(reader, manifestDigest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read signature manifest: %w", err)
 	}
@@ -457,14 +457,14 @@ func loadSignatureArtifact(reader OCIReader) (*signatureArtifact, error) {
 
 	blobs := make(map[digest.Digest][]byte)
 
-	configData, err := readAll(reader, blobTarName(manifest.Config.Digest))
+	configData, err := readBlob(reader, manifest.Config.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read signature config: %w", err)
 	}
 	blobs[manifest.Config.Digest] = configData
 
 	for _, l := range manifest.Layers {
-		data, err := readAll(reader, blobTarName(l.Digest))
+		data, err := readBlob(reader, l.Digest)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read signature layer %s: %w", l.Digest, err)
 		}

@@ -17,7 +17,7 @@ import (
 
 type OCIReader interface {
 	GetManifestDigest() (digest.Digest, error)
-	ReadFile(name string) (io.ReadSeekCloser, int64, error)
+	ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error)
 	Close() error
 }
 
@@ -59,11 +59,7 @@ func OpenOCIWriter(ref string) (OCIWriter, error) {
 	return newTarOCIWriter(ref)
 }
 
-func readManifestDigestFromIndex(reader OCIReader) (digest.Digest, error) {
-	data, err := readAll(reader, "index.json")
-	if err != nil {
-		return "", fmt.Errorf("failed to read index.json: %w", err)
-	}
+func parseManifestDigestFromIndex(data []byte) (digest.Digest, error) {
 	var index v1.Index
 	if err := json.Unmarshal(data, &index); err != nil {
 		return "", fmt.Errorf("failed to parse index.json: %w", err)
@@ -82,8 +78,8 @@ func readManifestDigestFromIndex(reader OCIReader) (digest.Digest, error) {
 	return desc.Digest, nil
 }
 
-func readAll(reader OCIReader, name string) ([]byte, error) {
-	r, _, err := reader.ReadFile(name)
+func readBlob(reader OCIReader, d digest.Digest) ([]byte, error) {
+	r, _, err := reader.ReadBlob(d)
 	if err != nil {
 		return nil, err
 	}
@@ -160,13 +156,21 @@ func indexTarArchive(path string) (*TarIndex, error) {
 }
 
 func (idx *TarIndex) GetManifestDigest() (digest.Digest, error) {
-	return readManifestDigestFromIndex(idx)
+	entry, ok := idx.entries["index.json"]
+	if !ok {
+		return "", fmt.Errorf("index.json not found in tar")
+	}
+	data := make([]byte, entry.size)
+	if _, err := idx.file.ReadAt(data, entry.offset); err != nil {
+		return "", fmt.Errorf("failed to read index.json: %w", err)
+	}
+	return parseManifestDigestFromIndex(data)
 }
 
-func (idx *TarIndex) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
-	entry, ok := idx.entries[name]
+func (idx *TarIndex) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+	entry, ok := idx.entries[blobTarName(d)]
 	if !ok {
-		return nil, 0, fmt.Errorf("file not found in tar: %s", name)
+		return nil, 0, fmt.Errorf("blob not found in tar: %s", d)
 	}
 
 	return readSeekNopCloser{io.NewSectionReader(idx.file, entry.offset, entry.size)}, entry.size, nil
@@ -190,11 +194,15 @@ func NewDirOCIReader(dir string) *DirOCIReader {
 }
 
 func (d *DirOCIReader) GetManifestDigest() (digest.Digest, error) {
-	return readManifestDigestFromIndex(d)
+	data, err := os.ReadFile(filepath.Join(d.dir, "index.json"))
+	if err != nil {
+		return "", fmt.Errorf("failed to read index.json: %w", err)
+	}
+	return parseManifestDigestFromIndex(data)
 }
 
-func (d *DirOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
-	f, err := os.Open(d.dir + "/" + name)
+func (d *DirOCIReader) ReadBlob(dgst digest.Digest) (io.ReadSeekCloser, int64, error) {
+	f, err := os.Open(filepath.Join(d.dir, blobTarName(dgst)))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -421,7 +429,8 @@ func (r *csOCIReader) GetManifestDigest() (digest.Digest, error) {
 	return r.manifestDigest, nil
 }
 
-func (r *csOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
+func (r *csOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+	name := blobTarName(d)
 	if data, ok := r.files[name]; ok {
 		return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
 	}
@@ -437,7 +446,7 @@ func (r *csOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 		}
 		return f, info.Size(), nil
 	}
-	return nil, 0, fmt.Errorf("file not found: %s", name)
+	return nil, 0, fmt.Errorf("blob not found: %s", d)
 }
 
 func (r *csOCIReader) Close() error {

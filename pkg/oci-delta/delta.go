@@ -43,7 +43,7 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 	}
 	log.Debug("  Delta manifest: %s", deltaManifestDigest.Encoded()[:16])
 
-	deltaManifestData, err := readAll(reader, blobTarName(deltaManifestDigest))
+	deltaManifestData, err := readBlob(reader, deltaManifestDigest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read delta manifest: %w", err)
 	}
@@ -89,7 +89,7 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 		return nil, fmt.Errorf("delta manifest contains no embedded image config layer")
 	}
 
-	imageManifestData, err := readAll(reader, blobTarName(imageManifestDesc.Digest))
+	imageManifestData, err := readBlob(reader, imageManifestDesc.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read embedded image manifest: %w", err)
 	}
@@ -99,7 +99,7 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 	}
 	log.Debug("  Image manifest: %s (%d layers)", imageManifestDesc.Digest.Encoded()[:16], len(imageManifest.Layers))
 
-	imageConfigData, err := readAll(reader, blobTarName(imageConfigDesc.Digest))
+	imageConfigData, err := readBlob(reader, imageConfigDesc.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read embedded image config: %w", err)
 	}
@@ -111,7 +111,7 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 
 	var signatures []EmbeddedSignature
 	for _, desc := range sigManifestDescs {
-		sigData, err := readAll(reader, blobTarName(desc.Digest))
+		sigData, err := readBlob(reader, desc.Digest)
 		if err != nil {
 			log.Warning("failed to read signature manifest %s: %v", desc.Digest.Encoded()[:16], err)
 			continue
@@ -154,16 +154,16 @@ func (d *DeltaArtifact) ImageManifestDigest() digest.Digest {
 }
 
 func (d *DeltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {
-	return readAll(d.reader, blobTarName(dgst))
+	return readBlob(d.reader, dgst)
 }
 
 func (d *DeltaArtifact) GetBlobReader(dgst digest.Digest) (io.ReadSeekCloser, error) {
-	r, _, err := d.reader.ReadFile(blobTarName(dgst))
+	r, _, err := d.reader.ReadBlob(dgst)
 	return r, err
 }
 
 func (d *DeltaArtifact) GetBlobSize(dgst digest.Digest) (int64, error) {
-	r, size, err := d.reader.ReadFile(blobTarName(dgst))
+	r, size, err := d.reader.ReadBlob(dgst)
 	if err != nil {
 		return 0, err
 	}

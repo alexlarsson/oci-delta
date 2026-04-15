@@ -54,11 +54,7 @@ type memReader struct {
 	blobs map[digest.Digest][]byte
 }
 
-func (m *memReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
-	d := digestFromBlobPath(name)
-	if d == "" {
-		return nil, 0, os.ErrNotExist
-	}
+func (m *memReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
 	data, ok := m.blobs[d]
 	if !ok {
 		return nil, 0, os.ErrNotExist
