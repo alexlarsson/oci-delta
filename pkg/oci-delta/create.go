@@ -86,8 +86,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 	}
 
 	// Read embedded image manifest and config data.
-	imageManifestDesc := new.index.Manifests[0]
-	imageManifestData, err := readAll(new.reader, blobTarName(imageManifestDesc.Digest))
+	imageManifestData, err := readAll(new.reader, blobTarName(new.manifestDigest))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read new image manifest: %w", err)
 	}
@@ -100,7 +99,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 	var deltaLayers []v1.Descriptor
 	deltaLayers = append(deltaLayers, v1.Descriptor{
 		MediaType: v1.MediaTypeImageManifest,
-		Digest:    imageManifestDesc.Digest,
+		Digest:    new.manifestDigest,
 		Size:      int64(len(imageManifestData)),
 		Annotations: map[string]string{
 			annotationDeltaContent: "image-manifest",
@@ -194,7 +193,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 	deltaConfigData := []byte("{}")
 	deltaConfigDigest := computeDigest(deltaConfigData)
 	deltaAnnotations := map[string]string{
-		annotationDeltaTarget:       imageManifestDesc.Digest.String(),
+		annotationDeltaTarget:       new.manifestDigest.String(),
 		annotationDeltaSource:       old.manifestDigest.String(),
 		annotationDeltaSourceConfig: old.configDigest.String(),
 	}
@@ -209,7 +208,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 		ArtifactType: mediaTypeDelta,
 		Subject: &v1.Descriptor{
 			MediaType: v1.MediaTypeImageManifest,
-			Digest:    imageManifestDesc.Digest,
+			Digest:    new.manifestDigest,
 			Size:      int64(len(imageManifestData)),
 		},
 		Config: v1.Descriptor{
@@ -247,7 +246,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 	}
 
 	log.Debug("Writing image manifest and config blobs")
-	if err := writer.WriteFile(blobTarName(imageManifestDesc.Digest), imageManifestData); err != nil {
+	if err := writer.WriteFile(blobTarName(new.manifestDigest), imageManifestData); err != nil {
 		return nil, err
 	}
 	if err := writer.WriteFile(blobTarName(new.manifest.Config.Digest), imageConfigData); err != nil {
@@ -441,20 +440,12 @@ type signatureArtifact struct {
 }
 
 func loadSignatureArtifact(reader OCIReader) (*signatureArtifact, error) {
-	indexData, err := readAll(reader, "index.json")
+	manifestDigest, err := reader.GetManifestDigest()
 	if err != nil {
-		return nil, fmt.Errorf("signature artifact has no index.json: %w", err)
-	}
-	var index v1.Index
-	if err := json.Unmarshal(indexData, &index); err != nil {
-		return nil, fmt.Errorf("failed to parse signature index.json: %w", err)
-	}
-	if len(index.Manifests) == 0 {
-		return nil, fmt.Errorf("signature artifact contains no manifests")
+		return nil, fmt.Errorf("failed to read signature manifest digest: %w", err)
 	}
 
-	manifestDesc := index.Manifests[0]
-	manifestData, err := readAll(reader, blobTarName(manifestDesc.Digest))
+	manifestData, err := readAll(reader, blobTarName(manifestDigest))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read signature manifest: %w", err)
 	}
@@ -482,7 +473,7 @@ func loadSignatureArtifact(reader OCIReader) (*signatureArtifact, error) {
 
 	return &signatureArtifact{
 		manifestData:   manifestData,
-		manifestDigest: manifestDesc.Digest,
+		manifestDigest: manifestDigest,
 		manifest:       manifest,
 		blobs:          blobs,
 	}, nil

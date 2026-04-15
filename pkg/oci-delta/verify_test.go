@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -64,6 +65,10 @@ func (m *memReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 	}
 	r := bytes.NewReader(data)
 	return readSeekNopCloser{r}, int64(len(data)), nil
+}
+
+func (m *memReader) GetManifestDigest() (digest.Digest, error) {
+	return "", fmt.Errorf("not supported")
 }
 
 func (m *memReader) Close() error { return nil }

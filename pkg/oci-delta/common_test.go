@@ -253,6 +253,10 @@ func newMemoryReader(files map[string][]byte) *memoryReader {
 	return &memoryReader{files: files}
 }
 
+func (m *memoryReader) GetManifestDigest() (digest.Digest, error) {
+	return readManifestDigestFromIndex(m)
+}
+
 func (m *memoryReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 	data, ok := m.files[name]
 	if !ok {

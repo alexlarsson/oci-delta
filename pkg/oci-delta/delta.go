@@ -37,19 +37,10 @@ type DeltaArtifact struct {
 }
 
 func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
-	indexData, err := readAll(reader, "index.json")
+	deltaManifestDigest, err := reader.GetManifestDigest()
 	if err != nil {
-		return nil, fmt.Errorf("delta does not contain index.json")
+		return nil, fmt.Errorf("failed to read delta manifest digest: %w", err)
 	}
-	var ociIndex v1.Index
-	if err := json.Unmarshal(indexData, &ociIndex); err != nil {
-		return nil, fmt.Errorf("failed to parse index.json: %w", err)
-	}
-	if len(ociIndex.Manifests) == 0 {
-		return nil, fmt.Errorf("delta contains no manifests")
-	}
-
-	deltaManifestDigest := ociIndex.Manifests[0].Digest
 	log.Debug("  Delta manifest: %s", deltaManifestDigest.Encoded()[:16])
 
 	deltaManifestData, err := readAll(reader, blobTarName(deltaManifestDigest))

@@ -12,11 +12,11 @@ import (
 
 	"github.com/containers/storage"
 	digest "github.com/opencontainers/go-digest"
-	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type OCIReader interface {
+	GetManifestDigest() (digest.Digest, error)
 	ReadFile(name string) (io.ReadSeekCloser, int64, error)
 	Close() error
 }
@@ -57,6 +57,29 @@ func OpenOCIWriter(ref string) (OCIWriter, error) {
 		return newDirOCIWriter(ref[len("oci:"):])
 	}
 	return newTarOCIWriter(ref)
+}
+
+func readManifestDigestFromIndex(reader OCIReader) (digest.Digest, error) {
+	data, err := readAll(reader, "index.json")
+	if err != nil {
+		return "", fmt.Errorf("failed to read index.json: %w", err)
+	}
+	var index v1.Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		return "", fmt.Errorf("failed to parse index.json: %w", err)
+	}
+	if len(index.Manifests) == 0 {
+		return "", fmt.Errorf("index.json contains no manifests")
+	}
+	if len(index.Manifests) > 1 {
+		return "", fmt.Errorf("index.json contains multiple manifests (%d), only single-image archives are supported", len(index.Manifests))
+	}
+	desc := index.Manifests[0]
+	if desc.MediaType == v1.MediaTypeImageIndex ||
+		desc.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
+		return "", fmt.Errorf("index.json contains a manifest list, only single-image archives are supported")
+	}
+	return desc.Digest, nil
 }
 
 func readAll(reader OCIReader, name string) ([]byte, error) {
@@ -136,6 +159,10 @@ func indexTarArchive(path string) (*TarIndex, error) {
 	}, nil
 }
 
+func (idx *TarIndex) GetManifestDigest() (digest.Digest, error) {
+	return readManifestDigestFromIndex(idx)
+}
+
 func (idx *TarIndex) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 	entry, ok := idx.entries[name]
 	if !ok {
@@ -160,6 +187,10 @@ type DirOCIReader struct {
 
 func NewDirOCIReader(dir string) *DirOCIReader {
 	return &DirOCIReader{dir: dir}
+}
+
+func (d *DirOCIReader) GetManifestDigest() (digest.Digest, error) {
+	return readManifestDigestFromIndex(d)
 }
 
 func (d *DirOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
@@ -280,11 +311,11 @@ func (w *dirOCIWriter) Close() error {
 // AutoDecompress.
 
 type csOCIReader struct {
-	files      map[string][]byte // in-memory blobs (index, manifest, config)
-	layerFiles map[string]string // digest path -> temp file path
-	tmpDir     string
-	signatures []OCIReader
-	store      storage.Store
+	manifestDigest digest.Digest
+	files          map[string][]byte // in-memory blobs (manifest, config)
+	layerFiles     map[string]string // digest path -> temp file path
+	tmpDir         string
+	store          storage.Store
 }
 
 func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []digest.Digest, exportDir string, log Logger) (map[string]string, error) {
@@ -377,24 +408,17 @@ func newCSReader(store storage.Store, imageRef string, tmpDir string, log Logger
 		blobTarName(manifest.Config.Digest): configData,
 	}
 
-	indexData, _ := json.Marshal(v1.Index{
-		Versioned: specs.Versioned{SchemaVersion: 2},
-		MediaType: v1.MediaTypeImageIndex,
-		Manifests: []v1.Descriptor{{
-			MediaType: v1.MediaTypeImageManifest,
-			Digest:    manifestDigest,
-			Size:      int64(len(manifestData)),
-		}},
-	})
-	files["index.json"] = indexData
-	files["oci-layout"] = ociLayoutFileData
-
 	return &csOCIReader{
-		files:      files,
-		layerFiles: layerFiles,
-		tmpDir:     exportDir,
-		store:      store,
+		manifestDigest: manifestDigest,
+		files:          files,
+		layerFiles:     layerFiles,
+		tmpDir:         exportDir,
+		store:          store,
 	}, nil
+}
+
+func (r *csOCIReader) GetManifestDigest() (digest.Digest, error) {
+	return r.manifestDigest, nil
 }
 
 func (r *csOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
@@ -419,12 +443,5 @@ func (r *csOCIReader) ReadFile(name string) (io.ReadSeekCloser, int64, error) {
 func (r *csOCIReader) Close() error {
 	os.RemoveAll(r.tmpDir)
 	r.store.Shutdown(false)
-	return nil
-}
-
-func ExtractedSignatures(reader OCIReader) []OCIReader {
-	if cs, ok := reader.(*csOCIReader); ok {
-		return cs.signatures
-	}
 	return nil
 }

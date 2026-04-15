@@ -25,7 +25,6 @@ type OCILayer struct {
 }
 
 type OCIImage struct {
-	index          *v1.Index
 	manifest       *v1.Manifest
 	manifestDigest digest.Digest
 	configDigest   digest.Digest
@@ -36,29 +35,12 @@ type OCIImage struct {
 }
 
 func parseOCIImage(reader OCIReader) (*OCIImage, error) {
-	indexData, err := readAll(reader, "index.json")
+	manifestDigest, err := reader.GetManifestDigest()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read index.json: %w", err)
+		return nil, err
 	}
 
-	var index v1.Index
-	if err := json.Unmarshal(indexData, &index); err != nil {
-		return nil, fmt.Errorf("failed to parse index.json: %w", err)
-	}
-
-	if len(index.Manifests) == 0 {
-		return nil, fmt.Errorf("OCI archive contains no manifests")
-	}
-	manifestDesc := index.Manifests[0]
-	if manifestDesc.MediaType == "application/vnd.oci.image.index.v1+json" ||
-		manifestDesc.MediaType == "application/vnd.docker.distribution.manifest.list.v2+json" {
-		return nil, fmt.Errorf("OCI archive contains a manifest list, only single-image archives are supported")
-	}
-	if len(index.Manifests) > 1 {
-		return nil, fmt.Errorf("OCI archive contains multiple manifests (%d), only single-image archives are supported", len(index.Manifests))
-	}
-
-	manifestData, err := readAll(reader, blobTarName(manifestDesc.Digest))
+	manifestData, err := readAll(reader, blobTarName(manifestDigest))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest: %w", err)
 	}
@@ -97,9 +79,8 @@ func parseOCIImage(reader OCIReader) (*OCIImage, error) {
 	}
 
 	return &OCIImage{
-		index:          &index,
 		manifest:       &manifest,
-		manifestDigest: manifestDesc.Digest,
+		manifestDigest: manifestDigest,
 		configDigest:   manifest.Config.Digest,
 		layers:         layers,
 		layerByDigest:  layerByDigest,
