@@ -26,7 +26,8 @@ type CreateStats struct {
 
 type CreateOptions struct {
 	TmpDir      string
-	Parallelism int // max concurrent tar-diff workers; 0 means GOMAXPROCS
+	Parallelism int         // max concurrent tar-diff workers; 0 means GOMAXPROCS
+	Signatures  []OCIReader // signature OCI artifacts to embed in the delta
 }
 
 func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opts CreateOptions, log Logger) (*CreateStats, error) {
@@ -101,11 +102,17 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 		MediaType: v1.MediaTypeImageManifest,
 		Digest:    imageManifestDesc.Digest,
 		Size:      int64(len(imageManifestData)),
+		Annotations: map[string]string{
+			annotationDeltaContent: "image-manifest",
+		},
 	})
 	deltaLayers = append(deltaLayers, v1.Descriptor{
 		MediaType: v1.MediaTypeImageConfig,
 		Digest:    new.manifest.Config.Digest,
 		Size:      int64(len(imageConfigData)),
+		Annotations: map[string]string{
+			annotationDeltaContent: "image-config",
+		},
 	})
 
 	var reusedDigests, reusedDiffIDs []string
@@ -120,7 +127,8 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 		stats.ProcessedLayerBytes += r.originalSize
 
 		annotations := map[string]string{
-			annotationDeltaTo: l.Digest.String(),
+			annotationDeltaContent: "image-layer",
+			annotationDeltaTo:      l.Digest.String(),
 		}
 		var desc v1.Descriptor
 		if r.diffPath != "" {
@@ -143,6 +151,43 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 			stats.OriginalLayerBytes += r.originalSize
 		}
 		deltaLayers = append(deltaLayers, desc)
+	}
+
+	var sigArtifacts []*signatureArtifact
+	for _, sigReader := range opts.Signatures {
+		sig, err := loadSignatureArtifact(sigReader)
+		if err != nil {
+			return nil, err
+		}
+		sigArtifacts = append(sigArtifacts, sig)
+		log.Debug("  Embedded signature (%d signature layers)", len(sig.manifest.Layers))
+
+		deltaLayers = append(deltaLayers, v1.Descriptor{
+			MediaType: v1.MediaTypeImageManifest,
+			Digest:    sig.manifestDigest,
+			Size:      int64(len(sig.manifestData)),
+			Annotations: map[string]string{
+				annotationDeltaContent: "cosign-signature",
+			},
+		})
+		deltaLayers = append(deltaLayers, v1.Descriptor{
+			MediaType: sig.manifest.Config.MediaType,
+			Digest:    sig.manifest.Config.Digest,
+			Size:      sig.manifest.Config.Size,
+			Annotations: map[string]string{
+				annotationDeltaContent: "cosign-signature-content",
+			},
+		})
+		for _, l := range sig.manifest.Layers {
+			deltaLayers = append(deltaLayers, v1.Descriptor{
+				MediaType: l.MediaType,
+				Digest:    l.Digest,
+				Size:      l.Size,
+				Annotations: map[string]string{
+					annotationDeltaContent: "cosign-signature-content",
+				},
+			})
+		}
 	}
 
 	// Build delta manifest.
@@ -221,6 +266,17 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 			}
 		} else {
 			if err := writeBlob(writer, new.reader, r.digest); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for _, sig := range sigArtifacts {
+		if err := writer.WriteFile(blobTarName(sig.manifestDigest), sig.manifestData); err != nil {
+			return nil, err
+		}
+		for dgst, data := range sig.blobs {
+			if err := writer.WriteFile(blobTarName(dgst), data); err != nil {
 				return nil, err
 			}
 		}
@@ -375,4 +431,59 @@ func runTarDiff(old *OCIImage, new *OCIImage, newLayerDigest digest.Digest, outp
 	defer outFile.Close()
 
 	return tardiff.DiffWithSources(sources, oldFiles, newFile, outFile, diffOpts)
+}
+
+type signatureArtifact struct {
+	manifestData   []byte
+	manifestDigest digest.Digest
+	manifest       v1.Manifest
+	blobs          map[digest.Digest][]byte
+}
+
+func loadSignatureArtifact(reader OCIReader) (*signatureArtifact, error) {
+	indexData, err := readAll(reader, "index.json")
+	if err != nil {
+		return nil, fmt.Errorf("signature artifact has no index.json: %w", err)
+	}
+	var index v1.Index
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		return nil, fmt.Errorf("failed to parse signature index.json: %w", err)
+	}
+	if len(index.Manifests) == 0 {
+		return nil, fmt.Errorf("signature artifact contains no manifests")
+	}
+
+	manifestDesc := index.Manifests[0]
+	manifestData, err := readAll(reader, blobTarName(manifestDesc.Digest))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read signature manifest: %w", err)
+	}
+
+	var manifest v1.Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse signature manifest: %w", err)
+	}
+
+	blobs := make(map[digest.Digest][]byte)
+
+	configData, err := readAll(reader, blobTarName(manifest.Config.Digest))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read signature config: %w", err)
+	}
+	blobs[manifest.Config.Digest] = configData
+
+	for _, l := range manifest.Layers {
+		data, err := readAll(reader, blobTarName(l.Digest))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read signature layer %s: %w", l.Digest, err)
+		}
+		blobs[l.Digest] = data
+	}
+
+	return &signatureArtifact{
+		manifestData:   manifestData,
+		manifestDigest: manifestDesc.Digest,
+		manifest:       manifest,
+		blobs:          blobs,
+	}, nil
 }

@@ -47,5 +47,7 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build
         run: make build
+      - name: Run synthetic tests
+        run: python3 tests/test-synthetic.py
       - name: Run integration tests
         run: ./tests/integration-test.sh

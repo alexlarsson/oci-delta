@@ -18,7 +18,12 @@ const (
 	annotationDeltaTo           = "io.github.containers.delta.to"
 	annotationDeltaReused       = "io.github.containers.delta.reused"
 	annotationDeltaReusedDiffID = "io.github.containers.delta.reused-diff-id"
+	annotationDeltaContent      = "io.github.containers.delta.content"
 )
+
+type EmbeddedSignature struct {
+	Manifest v1.Manifest
+}
 
 type DeltaArtifact struct {
 	reader              OCIReader
@@ -28,6 +33,7 @@ type DeltaArtifact struct {
 	imageConfigDigest   digest.Digest
 	sourceConfigDigest  string
 	deltaLayerByTo      map[digest.Digest]v1.Descriptor
+	signatures          []EmbeddedSignature
 }
 
 func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
@@ -61,15 +67,16 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 	sourceConfigDigest := deltaManifest.Annotations[annotationDeltaSourceConfig]
 
 	var imageManifestDesc, imageConfigDesc *v1.Descriptor
+	var sigManifestDescs []v1.Descriptor
 	deltaLayerByTo := make(map[digest.Digest]v1.Descriptor)
 	for i := range deltaManifest.Layers {
 		layer := &deltaManifest.Layers[i]
-		switch layer.MediaType {
-		case v1.MediaTypeImageManifest:
+		switch layer.Annotations[annotationDeltaContent] {
+		case "image-manifest":
 			imageManifestDesc = layer
-		case v1.MediaTypeImageConfig:
+		case "image-config":
 			imageConfigDesc = layer
-		case mediaTypeTarDiff, v1.MediaTypeImageLayerGzip:
+		case "image-layer":
 			toStr := layer.Annotations[annotationDeltaTo]
 			if toStr == "" {
 				continue
@@ -80,6 +87,8 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 				continue
 			}
 			deltaLayerByTo[toDigest] = *layer
+		case "cosign-signature":
+			sigManifestDescs = append(sigManifestDescs, *layer)
 		}
 	}
 	if imageManifestDesc == nil {
@@ -109,6 +118,22 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 	}
 	log.Debug("  Image config: %s (%d diff_ids)", imageConfigDesc.Digest.Encoded()[:16], len(imageConfig.RootFS.DiffIDs))
 
+	var signatures []EmbeddedSignature
+	for _, desc := range sigManifestDescs {
+		sigData, err := readAll(reader, blobTarName(desc.Digest))
+		if err != nil {
+			log.Warning("failed to read signature manifest %s: %v", desc.Digest.Encoded()[:16], err)
+			continue
+		}
+		var sigManifest v1.Manifest
+		if err := json.Unmarshal(sigData, &sigManifest); err != nil {
+			log.Warning("failed to parse signature manifest %s: %v", desc.Digest.Encoded()[:16], err)
+			continue
+		}
+		signatures = append(signatures, EmbeddedSignature{Manifest: sigManifest})
+		log.Debug("  Signature manifest: %s (%d layers)", desc.Digest.Encoded()[:16], len(sigManifest.Layers))
+	}
+
 	return &DeltaArtifact{
 		reader:              reader,
 		imageManifest:       imageManifest,
@@ -117,6 +142,7 @@ func ParseDeltaArtifact(reader OCIReader, log Logger) (*DeltaArtifact, error) {
 		imageConfigDigest:   imageConfigDesc.Digest,
 		sourceConfigDigest:  sourceConfigDigest,
 		deltaLayerByTo:      deltaLayerByTo,
+		signatures:          signatures,
 	}, nil
 }
 
@@ -126,6 +152,14 @@ func (d *DeltaArtifact) Close() error {
 
 func (d *DeltaArtifact) SourceConfigDigest() string {
 	return d.sourceConfigDigest
+}
+
+func (d *DeltaArtifact) Signatures() []EmbeddedSignature {
+	return d.signatures
+}
+
+func (d *DeltaArtifact) ImageManifestDigest() digest.Digest {
+	return d.imageManifestDigest
 }
 
 func (d *DeltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {

@@ -132,6 +132,7 @@ changes:
  * Layers that are used as-is from the original "old" image are recorded in a new `delta.reused` annotation..
  * We allow layers to be stored as the original tar.gz (if delta was not helpful for that layer).
  * The `delta.from` layer annotation is no longer used, as we diff against all layers in source image.
+ * We support embedding cosign signatures
 
 ### Outer structure
 
@@ -143,6 +144,9 @@ blobs/sha256/<delta-config-hash>    - empty config object "{}"
 blobs/sha256/<image-manifest-hash>  - the target image manifest (embedded)
 blobs/sha256/<image-config-hash>    - the target image config (embedded)
 blobs/sha256/<layer-data-hash>      - one blob per changed layer (tar-diff or original gzip)
+blobs/sha256/<sig-manifest-hash>    - (optional) cosign signature manifest
+blobs/sha256/<sig-config-hash>      - (optional) cosign signature config
+blobs/sha256/<sig-payload-hash>     - (optional) cosign signature payload layer(s)
 ```
 
 ### Delta manifest
@@ -177,19 +181,50 @@ Example delta manifest:
     {
       "mediaType": "application/vnd.oci.image.manifest.v1+json",
       "digest": "sha256:867b4193920b8192...",
-      "size": 715
+      "size": 715,
+      "annotations": {
+        "io.github.containers.delta.content": "image-manifest"
+      }
     },
     {
       "mediaType": "application/vnd.oci.image.config.v1+json",
       "digest": "sha256:49dc3229d8ed7b49...",
-      "size": 299
+      "size": 299,
+      "annotations": {
+        "io.github.containers.delta.content": "image-config"
+      }
     },
     {
       "mediaType": "application/vnd.tar-diff",
       "digest": "sha256:453b6a6f17f0ab18...",
       "size": 674,
       "annotations": {
+        "io.github.containers.delta.content": "image-layer",
         "io.github.containers.delta.to": "sha256:dc2c7d87dce684ab..."
+      }
+    },
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:48b5bc4b742a2...",
+      "size": 9822,
+      "annotations": {
+        "io.github.containers.delta.content": "cosign-signature"
+      }
+    },
+    {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:38c384ddf6673...",
+      "size": 233,
+      "annotations": {
+        "io.github.containers.delta.content": "cosign-signature-content"
+      }
+    },
+    {
+      "mediaType": "application/vnd.dev.cosign.simplesigning.v1+json",
+      "digest": "sha256:41e82de5226ac...",
+      "size": 241,
+      "annotations": {
+        "io.github.containers.delta.content": "cosign-signature-content"
       }
     }
   ],
@@ -210,28 +245,37 @@ Example delta manifest:
 
 ### Delta manifest layers
 
-The manifest layers contain the embedded image metadata followed by one entry per changed layer. Layers are identified
-by media type — parsers must look up layers by type and ignore unknown types for forward compatibility.
+Every layer in the delta manifest carries an `io.github.containers.delta.content` annotation that identifies its
+role. Parsers should dispatch on this annotation and ignore layers with unknown content values for forward
+compatibility.
 
-**Embedded image manifest** (`application/vnd.oci.image.manifest.v1+json`): the complete manifest of the target image,
-needed during apply to know the full layer list and reconstruct the output OCI archive.
-
-**Embedded image config** (`application/vnd.oci.image.config.v1+json`): the complete config of the target image, needed
-to obtain the diff_ids for validating reconstructed layers.
-
-**Delta layers** — one per changed layer, with these annotations:
-
-| Annotation | Description |
+| `delta.content` value | Description |
 |---|---|
-| `io.github.containers.delta.to` | Digest of the target layer this blob reconstructs |
+| `image-manifest` | The complete manifest of the target image |
+| `image-config` | The complete config of the target image (contains diff_ids) |
+| `image-layer` | A changed layer — either a tar-diff delta or the original gzip layer |
+| `cosign-signature` | A cosign/sigstore signature manifest (optional) |
+| `cosign-signature-content` | A blob referenced by a cosign signature manifest (optional) |
 
-A delta layer has one of two media types:
+**Image manifest** (`image-manifest`): needed during apply to know the full layer list and reconstruct the output
+OCI archive.
+
+**Image config** (`image-config`): needed to obtain the diff_ids for validating reconstructed layers.
+
+**Image layers** (`image-layer`): one per changed layer, with an additional `io.github.containers.delta.to`
+annotation containing the digest of the target layer this blob reconstructs. Has one of two media types:
 
 - `application/vnd.tar-diff`: a [tar-diff](https://github.com/containers/tar-diff) binary delta. Applying it against the
   source files (ostree objects on the local system) produces the uncompressed target layer tar. The result must be
   gzip-compressed and its diff_id validated before use.
 - `application/vnd.oci.image.layer.v1.tar+gzip`: the original layer, stored verbatim when the tar-diff would have been
   larger.
+
+**Signature layers** (`cosign-signature`, `cosign-signature-content`): optional. These allow signature verification
+at import time without registry access. Each signature artifact adds three entries: the signature manifest
+(`cosign-signature`), plus its config and payload blobs (`cosign-signature-content`). The signature manifest blob
+contains the full cosign layer descriptors with their original annotations. The config and payload blobs are listed
+in the delta manifest to ensure they are preserved when the delta is copied between storage backends.
 
 Layers whose diff_id matches one already installed on the system (listed in `delta.reused-diff-id`) are absent from the
 delta entirely. The apply tool omits them from the reconstructed archive and relies on bootc's diff_id-based
@@ -241,7 +285,8 @@ deduplication to find them locally.
 
 To reconstruct a usable OCI archive from a delta:
 
-1. Parse the delta manifest and locate the embedded image manifest and config by media type.
+1. Parse the delta manifest and locate the embedded image manifest and config by `io.github.containers.delta.content`
+   annotations.
 2. For each layer in the image manifest, find the matching delta layer by `delta.to` annotation.
    - If found as a tar-diff: apply against local ostree objects under `/sysroot/ostree/repo/objects/`, gzip-compress the
      result, and verify the diff_id matches the config.
@@ -249,3 +294,17 @@ To reconstruct a usable OCI archive from a delta:
    - If not found: the layer is reused - omit the blob from the output (bootc will locate it by diff_id).
 3. Write a new OCI archive with the image config, the reconstructed layer blobs, and a rewritten image manifest
    reflecting the new digests of any recompressed layers.
+
+### Embedded signatures
+
+Deltas can optionally carry cosign/sigstore signatures. This enables signature verification during import
+without requiring registry access (important for offline update scenarios).
+
+The signature artifact is stored as-is in the delta's blob directory, with its manifest, config, and
+payload layers all listed in the delta manifest. The signature manifest blob contains the full cosign
+layer descriptors with their original annotations (the actual cryptographic signature, Fulcio certificate,
+certificate chain, and Rekor transparency log bundle).
+
+At import time, the consumer can extract the signature manifest from layers annotated with
+`io.github.containers.delta.content' of `cosign-signature` and `cosign-signature-content`, then verify the
+signature against the embedded image manifest digest using the appropriate policy and keys.

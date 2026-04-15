@@ -141,6 +141,12 @@ def write_oci_archive(path: str, layer_pairs: list) -> None:
             add(f'blobs/sha256/{h}', data)
 
 
+def get_manifest_digest(archive_path: str) -> str:
+    with tarfile.open(archive_path, 'r') as t:
+        index = json.load(t.extractfile('index.json'))
+        return index['manifests'][0]['digest']
+
+
 def get_diff_ids(archive_path: str) -> list:
     with tarfile.open(archive_path, 'r') as t:
         index = json.load(t.extractfile('index.json'))
@@ -206,6 +212,135 @@ def run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
         print(result.stderr)
         sys.exit(1)
     return result
+
+
+def run_expect_fail(cmd: list) -> subprocess.CompletedProcess:
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  ERROR: expected failure but got success for {' '.join(cmd)}")
+        sys.exit(1)
+    return result
+
+
+def generate_keypair(tmp: str, name: str) -> tuple:
+    """Generate ECDSA P-256 key pair using openssl. Returns (priv_path, pub_path)."""
+    priv = os.path.join(tmp, f'{name}.pem')
+    pub = os.path.join(tmp, f'{name}.pub')
+    subprocess.run(['openssl', 'ecparam', '-genkey', '-name', 'prime256v1',
+                    '-noout', '-out', priv], check=True, capture_output=True)
+    subprocess.run(['openssl', 'ec', '-in', priv, '-pubout', '-out', pub],
+                    check=True, capture_output=True)
+    return priv, pub
+
+
+def sign_payload(priv_key_path: str, payload: bytes, tmp: str) -> str:
+    """Sign payload with ECDSA key, return base64-encoded signature."""
+    payload_file = os.path.join(tmp, 'payload.json')
+    sig_file = os.path.join(tmp, 'sig.der')
+    with open(payload_file, 'wb') as f:
+        f.write(payload)
+    subprocess.run(['openssl', 'dgst', '-sha256', '-sign', priv_key_path,
+                    '-out', sig_file, payload_file],
+                    check=True, capture_output=True)
+    with open(sig_file, 'rb') as f:
+        import base64
+        return base64.b64encode(f.read()).decode()
+
+
+def build_cosign_signature_archive(path: str, manifest_digest: str,
+                                   docker_ref: str, base64_sig: str) -> None:
+    """Build a cosign signature OCI archive."""
+    import base64
+
+    payload = json.dumps({
+        "critical": {
+            "type": "cosign container image signature",
+            "image": {"docker-manifest-digest": manifest_digest},
+            "identity": {"docker-reference": docker_ref},
+        },
+        "optional": {},
+    }, separators=(',', ':')).encode()
+
+    payload_digest = sha256_digest(payload)
+
+    # Boilerplate cosign config
+    config_obj = {
+        "architecture": "", "created": "0001-01-01T00:00:00Z",
+        "history": [{"created": "0001-01-01T00:00:00Z"}],
+        "os": "", "rootfs": {"type": "layers", "diff_ids": [payload_digest]},
+        "config": {},
+    }
+    config = json.dumps(config_obj, separators=(',', ':')).encode()
+    config_digest = sha256_digest(config)
+
+    sig_manifest = json.dumps({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "digest": config_digest, "size": len(config),
+        },
+        "layers": [{
+            "mediaType": "application/vnd.dev.cosign.simplesigning.v1+json",
+            "digest": payload_digest, "size": len(payload),
+            "annotations": {
+                "dev.cosignproject.cosign/signature": base64_sig,
+            },
+        }],
+    }, separators=(',', ':')).encode()
+    sig_manifest_digest = sha256_digest(sig_manifest)
+
+    index = json.dumps({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": sig_manifest_digest, "size": len(sig_manifest),
+        }],
+    }, separators=(',', ':')).encode()
+
+    oci_layout = json.dumps({"imageLayoutVersion": "1.0.0"}, separators=(',', ':')).encode()
+
+    blobs = {
+        sig_manifest_digest: sig_manifest,
+        config_digest: config,
+        payload_digest: payload,
+    }
+
+    with tarfile.open(path, 'w') as t:
+        def add(name, data):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        add('oci-layout', oci_layout)
+        add('index.json', index)
+        for d_str, data in blobs.items():
+            _, h = d_str.split(':', 1)
+            add(f'blobs/sha256/{h}', data)
+
+    return payload
+
+
+def create_signed_signature_archive(tmp: str, priv_key: str,
+                                    manifest_digest: str, docker_ref: str) -> str:
+    """Create and sign a cosign signature artifact. Returns path to the archive."""
+    import base64
+
+    payload = json.dumps({
+        "critical": {
+            "type": "cosign container image signature",
+            "image": {"docker-manifest-digest": manifest_digest},
+            "identity": {"docker-reference": docker_ref},
+        },
+        "optional": {},
+    }, separators=(',', ':')).encode()
+
+    base64_sig = sign_payload(priv_key, payload, tmp)
+
+    sig_archive = os.path.join(tmp, 'signature.oci-archive')
+    build_cosign_signature_archive(sig_archive, manifest_digest,
+                                   docker_ref, base64_sig)
+    return sig_archive
 
 
 def main():
@@ -377,6 +512,44 @@ def main():
         # (bootc will match it by diff_id, not digest)
         check(len(rec_digests) == len(new_digests),
               'reconstructed archive has same number of layers as new image')
+
+        # ---- Test 5: Create delta with embedded signature, verify on apply ----
+        print("\n[Test 5] Signature embedding and verification")
+        priv_key, pub_key = generate_keypair(tmp, 'test')
+        manifest_digest = get_manifest_digest(new_img)
+        sig_archive = create_signed_signature_archive(
+            tmp, priv_key, manifest_digest, 'example.com/test:latest')
+
+        signed_delta = os.path.join(tmp, 'signed-delta.tar')
+        run([str(oci_delta), 'create', '--signature', sig_archive,
+             old_img, new_img, signed_delta])
+
+        signed_recon = os.path.join(tmp, 'signed-reconstructed.oci-archive')
+        run([str(oci_delta), 'apply', f'--directory={delta_source}',
+             '--verify-key', pub_key, signed_delta, signed_recon])
+        check(True, 'apply with correct --verify-key succeeds')
+
+        # ---- Test 6: Wrong key fails verification ----
+        print("\n[Test 6] Signature verification fails with wrong key")
+        _, wrong_pub = generate_keypair(tmp, 'wrong')
+        signed_recon2 = os.path.join(tmp, 'signed-recon2.oci-archive')
+        run_expect_fail([str(oci_delta), 'apply', f'--directory={delta_source}',
+                         '--verify-key', wrong_pub, signed_delta, signed_recon2])
+        check(True, 'apply with wrong --verify-key fails as expected')
+
+        # ---- Test 7: No --verify-key skips verification ----
+        print("\n[Test 7] Apply without --verify-key skips verification")
+        signed_recon3 = os.path.join(tmp, 'signed-recon3.oci-archive')
+        run([str(oci_delta), 'apply', f'--directory={delta_source}',
+             signed_delta, signed_recon3])
+        check(True, 'apply without --verify-key succeeds (no verification)')
+
+        # ---- Test 8: Unsigned delta fails when --verify-key is given ----
+        print("\n[Test 8] Unsigned delta fails with --verify-key")
+        unsigned_recon = os.path.join(tmp, 'unsigned-recon.oci-archive')
+        run_expect_fail([str(oci_delta), 'apply', f'--directory={delta_source}',
+                         '--verify-key', pub_key, delta, unsigned_recon])
+        check(True, 'apply on unsigned delta with --verify-key fails as expected')
 
         print("\nAll tests passed.")
 

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto"
 	"fmt"
 	"os"
 
 	ocidelta "github.com/containers/oci-delta/pkg/oci-delta"
 	"github.com/containers/storage/pkg/reexec"
 	"github.com/containers/storage/pkg/unshare"
+	sigstoreSignature "github.com/sigstore/sigstore/pkg/signature"
 	flag "github.com/spf13/pflag"
 )
 
@@ -78,6 +80,7 @@ func createCommand(args []string) error {
 	verbose := fs.BoolP("verbose", "v", false, "show statistics after creation")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 	parallelism := fs.IntP("jobs", "j", 0, "max parallel tar-diff workers (default: number of CPUs)")
+	signatures := fs.StringArray("signature", nil, "signature OCI artifact to embed (can be specified multiple times)")
 
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: oci-delta create [OPTIONS] <old-image> <new-image> <output>")
@@ -125,6 +128,17 @@ func createCommand(args []string) error {
 	}
 	defer newReader.Close()
 
+	var sigReaders []ocidelta.OCIReader
+	for _, sigPath := range *signatures {
+		log.Debug("Opening signature: %s", sigPath)
+		sigReader, err := ocidelta.OpenOCIReader(sigPath, tmpDir)
+		if err != nil {
+			return fmt.Errorf("failed to open signature %s: %w", sigPath, err)
+		}
+		defer sigReader.Close()
+		sigReaders = append(sigReaders, sigReader)
+	}
+
 	writer, err := ocidelta.OpenOCIWriter(fs.Arg(2))
 	if err != nil {
 		return fmt.Errorf("failed to create output: %w", err)
@@ -133,6 +147,7 @@ func createCommand(args []string) error {
 	stats, err := ocidelta.CreateDelta(oldReader, newReader, writer, ocidelta.CreateOptions{
 		TmpDir:      tmpDir,
 		Parallelism: *parallelism,
+		Signatures:  sigReaders,
 	}, log)
 	if err != nil {
 		writer.Close()
@@ -166,6 +181,7 @@ func applyCommand(args []string) error {
 	repoPath := fs.String("ostree-repo", "/ostree/repo", "ostree repository path (auto-detects source ref via config digest)")
 	directorySource := fs.String("directory", "", "source directory for delta reconstruction (alternative to --ostree-repo)")
 	containerStorage := fs.String("container-storage", "", "podman container storage root for delta reconstruction (alternative to --ostree-repo)")
+	verifyKey := fs.String("verify-key", "", "path to cosign public key PEM file for signature verification")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -233,6 +249,17 @@ func applyCommand(args []string) error {
 	}
 	defer delta.Close()
 
+	if *verifyKey != "" {
+		log.Debug("Verifying signature with key: %s", *verifyKey)
+		verifier, err := sigstoreSignature.LoadVerifierFromPEMFile(*verifyKey, crypto.SHA256)
+		if err != nil {
+			return fmt.Errorf("failed to load verification key %s: %w", *verifyKey, err)
+		}
+		if err := ocidelta.VerifyDeltaSignature(delta, verifier, log); err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+	}
+
 	var dataSource ocidelta.DataSource
 	if *directorySource != "" {
 		dataSource = ocidelta.NewFilesystemDataSource(*directorySource)
@@ -277,6 +304,7 @@ func importCommand(args []string) error {
 	fs := flag.NewFlagSet("oci-delta import", flag.ContinueOnError)
 	containerStorage := fs.String("container-storage", "", "podman container storage root (default: system default)")
 	tag := fs.StringP("tag", "t", "", "tag name for the imported image")
+	verifyKey := fs.String("verify-key", "", "path to cosign public key PEM file for signature verification")
 	debug := fs.Bool("debug", false, "show detailed progress information")
 
 	fs.Usage = func() {
@@ -327,6 +355,17 @@ func importCommand(args []string) error {
 		return err
 	}
 	defer delta.Close()
+
+	if *verifyKey != "" {
+		log.Debug("Verifying signature with key: %s", *verifyKey)
+		verifier, err := sigstoreSignature.LoadVerifierFromPEMFile(*verifyKey, crypto.SHA256)
+		if err != nil {
+			return fmt.Errorf("failed to load verification key %s: %w", *verifyKey, err)
+		}
+		if err := ocidelta.VerifyDeltaSignature(delta, verifier, log); err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+	}
 
 	imageID, err := ocidelta.ImportDelta(delta, store, ocidelta.ImportOptions{
 		Tag:    *tag,

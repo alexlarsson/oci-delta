@@ -8,7 +8,8 @@ clean:
 
 test: build
 	go test ./...
-	python3 tools/test-synthetic.py
+	python3 tests/test-synthetic.py
+	tests/integration-test.sh
 
 fmt:
 	go fmt ./...
