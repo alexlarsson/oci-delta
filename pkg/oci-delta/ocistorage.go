@@ -3,6 +3,7 @@ package ocidelta
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -422,7 +423,9 @@ func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []d
 			return nil, fmt.Errorf("failed to create layer temp file: %w", err)
 		}
 
-		_, err = io.Copy(outFile, diffReader)
+		gzWriter := gzip.NewWriter(outFile)
+		_, err = io.Copy(gzWriter, diffReader)
+		gzWriter.Close()
 		outFile.Close()
 		diffReader.Close()
 		if err != nil {
