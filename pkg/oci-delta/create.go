@@ -302,8 +302,8 @@ type layerDiffResult struct {
 	// layer content, including recompressing them. However, we need the manifest
 	// to matcht the original, to allow signatures to keep working. This means
 	// we have to be careful about the difference when reusing layers.
-	actualSize   int64         // Actual size of the referenced blob contant
-	actualDigest digest.Digest // Actual digest of the referenced blob contant
+	actualSize   int64         // Actual size of the referenced blob content
+	actualDigest digest.Digest // Actual digest of the referenced blob content
 	diffPath     string        // temp file path; empty means reuse original layer
 	diffSize     int64
 	diffDigest   digest.Digest // sha256 of the diff file blob
