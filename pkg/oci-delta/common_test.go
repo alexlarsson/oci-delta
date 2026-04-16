@@ -120,6 +120,28 @@ func TestComputeFileDigestNotFound(t *testing.T) {
 	}
 }
 
+func TestVerifyBlobDigest(t *testing.T) {
+	data := []byte("verify me")
+	d := digest.FromBytes(data)
+
+	r := bytes.NewReader(data)
+	if err := verifyBlobDigest(r, d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have seeked back to start
+	buf, _ := io.ReadAll(r)
+	if string(buf) != "verify me" {
+		t.Errorf("after verify, read = %q, want %q", buf, "verify me")
+	}
+
+	// Mismatched digest
+	r.Seek(0, io.SeekStart)
+	wrongDigest := digest.FromBytes([]byte("wrong"))
+	if err := verifyBlobDigest(r, wrongDigest); err == nil {
+		t.Error("expected error for digest mismatch")
+	}
+}
+
 func TestParseOCIImage(t *testing.T) {
 	configDigest, configData := makeBlob(t, `{
 		"rootfs": {

@@ -57,6 +57,10 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 			if err != nil {
 				return fmt.Errorf("failed to read tar-diff for layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
+			if err := verifyBlobDigest(r, deltaLayer.Digest); err != nil {
+				r.Close()
+				return fmt.Errorf("tar-diff blob corrupted for layer %s: %w", layer.Digest.Encoded()[:16], err)
+			}
 			newDigest, newSize, err := processLayerDiff(opts.TmpDir, log, writer, r, expectedDiffID, dataSource)
 			if err != nil {
 				return err
