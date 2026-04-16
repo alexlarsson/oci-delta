@@ -115,7 +115,7 @@ make -C "$PROJECT_DIR" build -s
 echo "=== Creating test data ==="
 
 TD="$TEST_DIR/testdata"
-mkdir -p "$TD"/{layer1,layer2-v1,layer2-v2,layer3-v1,layer3-v2}
+mkdir -p "$TD"/{layer1,layer2-v1,layer2-v2,layer3-v1,layer3-v2,tiny-v1,tiny-v2}
 
 echo "layer1-file1" > "$TD/layer1/file1.txt"
 create_random_file "$TD/layer1/data.bin" 32
@@ -127,6 +127,12 @@ create_versioned_pair "$TD/layer2-v1" "$TD/layer2-v2" "layer2"
 create_random_file "$TD/layer3-v1/shared.bin" 64
 cp "$TD/layer3-v1/shared.bin" "$TD/layer3-v2/shared.bin"
 create_versioned_pair "$TD/layer3-v1" "$TD/layer3-v2" "layer3"
+
+# Tiny layer data: 1-byte files with no shared content.
+# These are small enough that tar-diff overhead exceeds gzip, forcing
+# the original-layer fallback codepath.
+echo -n "x" > "$TD/tiny-v1/t.txt"
+echo -n "y" > "$TD/tiny-v2/t.txt"
 
 # image1: layer1 + layer2-v1 + layer3-v1
 cat > "$TD/Containerfile.1" <<'EOF'
@@ -152,11 +158,27 @@ COPY layer2-v2/ /layer2/
 COPY layer3-v2/ /layer3/
 EOF
 
+# image4: layer1 + tiny-v1 (tiny layer for original-layer fallback test)
+cat > "$TD/Containerfile.4" <<'EOF'
+FROM scratch
+COPY layer1/ /layer1/
+COPY tiny-v1/ /tiny/
+EOF
+
+# image5: layer1 + tiny-v2 (layer1 reused, tiny layer is new and small)
+cat > "$TD/Containerfile.5" <<'EOF'
+FROM scratch
+COPY layer1/ /layer1/
+COPY tiny-v2/ /tiny/
+EOF
+
 echo "=== Building test images ==="
 cd "$TD"
 podman build --timestamp 0 -q -f Containerfile.1 -t localhost/testimage1:latest . >/dev/null
 podman build --timestamp 0 -q -f Containerfile.2 -t localhost/testimage2:latest . >/dev/null
 podman build --timestamp 0 -q -f Containerfile.3 -t localhost/testimage3:latest . >/dev/null
+podman build --timestamp 0 -q -f Containerfile.4 -t localhost/testimage4:latest . >/dev/null
+podman build --timestamp 0 -q -f Containerfile.5 -t localhost/testimage5:latest . >/dev/null
 
 echo "=== Exporting images ==="
 IMAGES="$TEST_DIR/images"
@@ -164,8 +186,10 @@ mkdir -p "$IMAGES"
 podman save --format oci-archive -o "$IMAGES/image1.oci-archive" localhost/testimage1:latest
 podman save --format oci-archive -o "$IMAGES/image2.oci-archive" localhost/testimage2:latest
 podman save --format oci-archive -o "$IMAGES/image3.oci-archive" localhost/testimage3:latest
+podman save --format oci-archive -o "$IMAGES/image4.oci-archive" localhost/testimage4:latest
+podman save --format oci-archive -o "$IMAGES/image5.oci-archive" localhost/testimage5:latest
 
-for i in 1 2 3; do
+for i in 1 2 3 4 5; do
     mkdir -p "$IMAGES/image${i}-oci"
     tar -xf "$IMAGES/image${i}.oci-archive" -C "$IMAGES/image${i}-oci"
 done
@@ -173,10 +197,14 @@ done
 REF_DIFFIDS_1=$(get_diff_ids "$IMAGES/image1.oci-archive")
 REF_DIFFIDS_2=$(get_diff_ids "$IMAGES/image2.oci-archive")
 REF_DIFFIDS_3=$(get_diff_ids "$IMAGES/image3.oci-archive")
+REF_DIFFIDS_4=$(get_diff_ids "$IMAGES/image4.oci-archive")
+REF_DIFFIDS_5=$(get_diff_ids "$IMAGES/image5.oci-archive")
 
 echo "  Image 1 diff_ids: $(echo "$REF_DIFFIDS_1" | tr '\n' ' ')"
 echo "  Image 2 diff_ids: $(echo "$REF_DIFFIDS_2" | tr '\n' ' ')"
 echo "  Image 3 diff_ids: $(echo "$REF_DIFFIDS_3" | tr '\n' ' ')"
+echo "  Image 4 diff_ids: $(echo "$REF_DIFFIDS_4" | tr '\n' ' ')"
+echo "  Image 5 diff_ids: $(echo "$REF_DIFFIDS_5" | tr '\n' ' ')"
 
 # Verify layer reuse assumptions
 diffids1=($REF_DIFFIDS_1)
@@ -193,6 +221,16 @@ if [ "${diffids1[2]}" != "${diffids2[2]}" ]; then
 fi
 if [ "${diffids2[1]}" != "${diffids3[1]}" ]; then
     echo "ERROR: image2 and image3 do not share layer 2 — test setup broken"
+    exit 1
+fi
+diffids4=($REF_DIFFIDS_4)
+diffids5=($REF_DIFFIDS_5)
+if [ "${diffids4[0]}" != "${diffids5[0]}" ]; then
+    echo "ERROR: image4 and image5 do not share layer 1 — test setup broken"
+    exit 1
+fi
+if [ "${diffids4[1]}" = "${diffids5[1]}" ]; then
+    echo "ERROR: image4 and image5 should differ in layer 2 — test setup broken"
     exit 1
 fi
 echo "  Layer reuse verified"
@@ -228,6 +266,18 @@ else
     fail "create delta 2→3 (containers-storage → oci-archive)" "exit code $?"
 fi
 
+echo "  Creating delta 4→5 (containers-storage, with original-layer fallback)..."
+if CS_OUTPUT=$($OCI_DELTA create -v "containers-storage:localhost/testimage4:latest" "containers-storage:localhost/testimage5:latest" "$DELTAS/delta45.oci-archive" 2>&1); then
+    ORIG_BYTES=$(echo "$CS_OUTPUT" | grep "Original layer bytes:" | awk '{print $NF}')
+    if [ -n "$ORIG_BYTES" ] && [ "$ORIG_BYTES" -gt 0 ] 2>/dev/null; then
+        pass "create delta 4→5 (containers-storage, original-layer fallback used)"
+    else
+        fail "create delta 4→5" "original-layer fallback not triggered (Original layer bytes: ${ORIG_BYTES:-missing})"
+    fi
+else
+    fail "create delta 4→5 (containers-storage)" "exit code $?"
+fi
+
 # ============================================================
 # Apply tests
 # ============================================================
@@ -256,6 +306,15 @@ else
     fail "apply delta 1→2 (--container-storage → oci dir)" "exit code $?"
 fi
 
+echo "  Applying delta 4→5 with --directory → oci-archive..."
+extract_rootfs "$IMAGES/image4-oci" "$TEST_DIR/image4-rootfs"
+if $OCI_DELTA apply --directory "$TEST_DIR/image4-rootfs" "$DELTAS/delta45.oci-archive" "$OUTPUTS/recon5-dir.oci-archive"; then
+    actual=$(get_diff_ids "$OUTPUTS/recon5-dir.oci-archive")
+    check_diff_ids "apply delta 4→5 (--directory, original-layer fallback)" "$REF_DIFFIDS_5" "$actual"
+else
+    fail "apply delta 4→5 (--directory)" "exit code $?"
+fi
+
 echo "  Applying delta 1→2 from oci dir delta with --directory → oci-archive..."
 if $OCI_DELTA apply --directory "$TEST_DIR/image1-rootfs" "oci:$DELTAS/delta12-oci" "$OUTPUTS/recon2-ocidir.oci-archive"; then
     actual=$(get_diff_ids "$OUTPUTS/recon2-ocidir.oci-archive")
@@ -271,7 +330,7 @@ fi
 echo ""
 echo "=== Test: Import delta (chaining) ==="
 
-podman rmi localhost/testimage2:latest localhost/testimage3:latest >/dev/null 2>&1 || true
+podman rmi localhost/testimage2:latest localhost/testimage3:latest localhost/testimage5:latest >/dev/null 2>&1 || true
 
 echo "  Importing delta 1→2..."
 if IMPORT2_ID=$($OCI_DELTA import --tag localhost/recon2:latest "$DELTAS/delta12.oci-archive"); then
@@ -280,6 +339,15 @@ if IMPORT2_ID=$($OCI_DELTA import --tag localhost/recon2:latest "$DELTAS/delta12
     check_diff_ids "import delta 1→2" "$REF_DIFFIDS_2" "$actual"
 else
     fail "import delta 1→2" "exit code $?"
+fi
+
+echo "  Importing delta 4→5 (original-layer fallback)..."
+if IMPORT5_ID=$($OCI_DELTA import --tag localhost/recon5:latest "$DELTAS/delta45.oci-archive"); then
+    echo "    Imported as ${IMPORT5_ID:0:16}"
+    actual=$(get_diff_ids_storage localhost/recon5:latest)
+    check_diff_ids "import delta 4→5 (original-layer fallback)" "$REF_DIFFIDS_5" "$actual"
+else
+    fail "import delta 4→5" "exit code $?"
 fi
 
 echo "  Importing delta 2→3 (chained, source = imported image2)..."
