@@ -390,6 +390,9 @@ func (m *memOCIReader) Close() error { return nil }
 // store.Diff), but named by their original compressed digest so that the
 // original manifest is preserved. tar-diff handles uncompressed input via
 // AutoDecompress.
+//
+// csOCIReader takes ownership of the storage.Store passed to newCSReader;
+// Close() will call store.Shutdown().
 
 type csOCIReader struct {
 	manifestDigest digest.Digest
