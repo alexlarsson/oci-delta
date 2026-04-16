@@ -158,12 +158,12 @@ func (d *DeltaArtifact) ReadBlob(dgst digest.Digest) ([]byte, error) {
 }
 
 func (d *DeltaArtifact) GetBlobReader(dgst digest.Digest) (io.ReadSeekCloser, error) {
-	r, _, err := d.reader.ReadBlob(dgst)
+	r, _, _, err := d.reader.ReadBlob(dgst)
 	return r, err
 }
 
 func (d *DeltaArtifact) GetBlobSize(dgst digest.Digest) (int64, error) {
-	r, size, err := d.reader.ReadBlob(dgst)
+	r, size, _, err := d.reader.ReadBlob(dgst)
 	if err != nil {
 		return 0, err
 	}

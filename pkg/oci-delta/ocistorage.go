@@ -3,6 +3,8 @@ package ocidelta
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +21,10 @@ import (
 
 type OCIReader interface {
 	GetManifestDigest() (digest.Digest, error)
-	ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error)
+	// ReadBlob returns a reader for the blob identified by d. The returned
+	// digest is the actual content digest, which may differ from d when the
+	// blob has been recompressed (e.g. layers exported from container storage).
+	ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error)
 	Close() error
 }
 
@@ -110,12 +115,19 @@ func parseManifestDigestFromIndex(data []byte, imageName string) (digest.Digest,
 }
 
 func readBlob(reader OCIReader, d digest.Digest) ([]byte, error) {
-	r, _, err := reader.ReadBlob(d)
+	r, _, _, err := reader.ReadBlob(d)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if computeDigest(data) != d {
+		return nil, fmt.Errorf("blob digest mismatch: expected %s, got %s", d, computeDigest(data))
+	}
+	return data, nil
 }
 
 // TarIndex — tar archive backed OCIReader
@@ -200,13 +212,13 @@ func (idx *TarIndex) GetManifestDigest() (digest.Digest, error) {
 	return parseManifestDigestFromIndex(data, idx.imageName)
 }
 
-func (idx *TarIndex) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+func (idx *TarIndex) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error) {
 	entry, ok := idx.entries[blobTarName(d)]
 	if !ok {
-		return nil, 0, fmt.Errorf("blob not found in tar: %s", d)
+		return nil, 0, "", fmt.Errorf("blob not found in tar: %s", d)
 	}
 
-	return readSeekNopCloser{io.NewSectionReader(idx.file, entry.offset, entry.size)}, entry.size, nil
+	return readSeekNopCloser{io.NewSectionReader(idx.file, entry.offset, entry.size)}, entry.size, d, nil
 }
 
 func (idx *TarIndex) Close() error {
@@ -235,17 +247,17 @@ func (d *DirOCIReader) GetManifestDigest() (digest.Digest, error) {
 	return parseManifestDigestFromIndex(data, d.imageName)
 }
 
-func (d *DirOCIReader) ReadBlob(dgst digest.Digest) (io.ReadSeekCloser, int64, error) {
+func (d *DirOCIReader) ReadBlob(dgst digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error) {
 	f, err := os.Open(filepath.Join(d.dir, blobTarName(dgst)))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, 0, err
+		return nil, 0, "", err
 	}
-	return f, info.Size(), nil
+	return f, info.Size(), dgst, nil
 }
 
 func (d *DirOCIReader) Close() error {
@@ -361,12 +373,12 @@ func (m *memOCIReader) GetManifestDigest() (digest.Digest, error) {
 	return m.manifestDigest, nil
 }
 
-func (m *memOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+func (m *memOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error) {
 	data, ok := m.blobs[d]
 	if !ok {
-		return nil, 0, fmt.Errorf("blob not found: %s", d)
+		return nil, 0, "", fmt.Errorf("blob not found: %s", d)
 	}
-	return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
+	return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), d, nil
 }
 
 func (m *memOCIReader) Close() error { return nil }
@@ -381,15 +393,17 @@ func (m *memOCIReader) Close() error { return nil }
 
 type csOCIReader struct {
 	manifestDigest digest.Digest
-	files          map[string][]byte // in-memory blobs (manifest, config)
-	layerFiles     map[string]string // digest path -> temp file path
+	files          map[string][]byte        // in-memory blobs (manifest, config)
+	layerFiles     map[string]string        // digest path -> temp file path
+	layerDigests   map[string]digest.Digest // digest path -> actual content digest
 	tmpDir         string
 	signatures     []OCIReader
 	store          storage.Store
 }
 
-func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []digest.Digest, exportDir string, log Logger) (map[string]string, error) {
+func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []digest.Digest, exportDir string, log Logger) (map[string]string, map[string]digest.Digest, error) {
 	layerFiles := make(map[string]string)
+	layerDigests := make(map[string]digest.Digest)
 
 	for i, layerDesc := range manifest.Layers {
 		if i >= len(diffIDs) {
@@ -399,36 +413,41 @@ func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []d
 
 		existing, err := store.LayersByUncompressedDigest(diffID)
 		if err != nil || len(existing) == 0 {
-			return nil, fmt.Errorf("layer with diff_id %s not found in storage", diffID)
+			return nil, nil, fmt.Errorf("layer with diff_id %s not found in storage", diffID)
 		}
 
 		sl := existing[0]
 		diffReader, err := store.Diff(sl.Parent, sl.ID, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to export layer %s: %w", diffID.Encoded()[:16], err)
+			return nil, nil, fmt.Errorf("failed to export layer %s: %w", diffID.Encoded()[:16], err)
 		}
 
 		layerPath := filepath.Join(exportDir, layerDesc.Digest.Encoded())
 		outFile, err := os.Create(layerPath)
 		if err != nil {
 			diffReader.Close()
-			return nil, fmt.Errorf("failed to create layer temp file: %w", err)
+			return nil, nil, fmt.Errorf("failed to create layer temp file: %w", err)
 		}
 
-		_, err = io.Copy(outFile, diffReader)
+		h := sha256.New()
+		gzWriter := gzip.NewWriter(io.MultiWriter(outFile, h))
+		_, err = io.Copy(gzWriter, diffReader)
+		gzWriter.Close()
 		outFile.Close()
 		diffReader.Close()
 		if err != nil {
-			return nil, fmt.Errorf("failed to write layer %s: %w", diffID.Encoded()[:16], err)
+			return nil, nil, fmt.Errorf("failed to write layer %s: %w", diffID.Encoded()[:16], err)
 		}
 
-		layerFiles[blobTarName(layerDesc.Digest)] = layerPath
+		blobName := blobTarName(layerDesc.Digest)
+		layerFiles[blobName] = layerPath
+		layerDigests[blobName] = digest.NewDigestFromBytes(digest.SHA256, h.Sum(nil))
 		if log != nil {
 			log.Debug("  Exported layer %d/%d %s", i+1, len(manifest.Layers), layerDesc.Digest.Encoded()[:16])
 		}
 	}
 
-	return layerFiles, nil
+	return layerFiles, layerDigests, nil
 }
 
 func newCSReader(store storage.Store, img *storage.Image, tmpDir string, log Logger) (*csOCIReader, error) {
@@ -472,7 +491,7 @@ func newCSReader(store storage.Store, img *storage.Image, tmpDir string, log Log
 		sigs = extracted
 	}
 
-	layerFiles, err := exportStorageLayers(store, &manifest, config.RootFS.DiffIDs, exportDir, log)
+	layerFiles, layerDigests, err := exportStorageLayers(store, &manifest, config.RootFS.DiffIDs, exportDir, log)
 	if err != nil {
 		os.RemoveAll(exportDir)
 		return nil, err
@@ -487,6 +506,7 @@ func newCSReader(store storage.Store, img *storage.Image, tmpDir string, log Log
 		manifestDigest: manifestDigest,
 		files:          files,
 		layerFiles:     layerFiles,
+		layerDigests:   layerDigests,
 		tmpDir:         exportDir,
 		signatures:     sigs,
 		store:          store,
@@ -497,24 +517,24 @@ func (r *csOCIReader) GetManifestDigest() (digest.Digest, error) {
 	return r.manifestDigest, nil
 }
 
-func (r *csOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+func (r *csOCIReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error) {
 	name := blobTarName(d)
 	if data, ok := r.files[name]; ok {
-		return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
+		return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), d, nil
 	}
 	if path, ok := r.layerFiles[name]; ok {
 		f, err := os.Open(path)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, "", err
 		}
 		info, err := f.Stat()
 		if err != nil {
 			f.Close()
-			return nil, 0, err
+			return nil, 0, "", err
 		}
-		return f, info.Size(), nil
+		return f, info.Size(), r.layerDigests[name], nil
 	}
-	return nil, 0, fmt.Errorf("blob not found: %s", d)
+	return nil, 0, "", fmt.Errorf("blob not found: %s", d)
 }
 
 func (r *csOCIReader) Close() error {

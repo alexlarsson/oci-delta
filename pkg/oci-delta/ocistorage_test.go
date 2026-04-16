@@ -50,12 +50,15 @@ func TestTarIndexReadBlob(t *testing.T) {
 	}
 	defer idx.Close()
 
-	r, size, err := idx.ReadBlob(d)
+	r, size, actualDigest, err := idx.ReadBlob(d)
 	if err != nil {
 		t.Fatalf("ReadBlob(%s): %v", d, err)
 	}
 	if size != int64(len(blobContent)) {
 		t.Errorf("ReadBlob size = %d, want %d", size, len(blobContent))
+	}
+	if actualDigest != d {
+		t.Errorf("ReadBlob actualDigest = %s, want %s", actualDigest, d)
 	}
 	got, err := io.ReadAll(r)
 	r.Close()
@@ -77,7 +80,7 @@ func TestTarIndexReadBlobMissing(t *testing.T) {
 	}
 	defer idx.Close()
 
-	_, _, err = idx.ReadBlob(digest.FromBytes([]byte("nonexistent")))
+	_, _, _, err = idx.ReadBlob(digest.FromBytes([]byte("nonexistent")))
 	if err == nil {
 		t.Error("expected error for missing blob")
 	}
@@ -95,7 +98,7 @@ func TestTarIndexSeekable(t *testing.T) {
 	}
 	defer idx.Close()
 
-	r, _, err := idx.ReadBlob(d)
+	r, _, _, err := idx.ReadBlob(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +148,7 @@ func TestDirOCIReaderReadBlob(t *testing.T) {
 
 	reader := NewDirOCIReader(dir, "")
 
-	r, size, err := reader.ReadBlob(d)
+	r, size, _, err := reader.ReadBlob(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +164,7 @@ func TestDirOCIReaderReadBlob(t *testing.T) {
 
 func TestDirOCIReaderMissing(t *testing.T) {
 	reader := NewDirOCIReader(t.TempDir(), "")
-	_, _, err := reader.ReadBlob(digest.FromBytes([]byte("missing")))
+	_, _, _, err := reader.ReadBlob(digest.FromBytes([]byte("missing")))
 	if err == nil {
 		t.Error("expected error for missing blob")
 	}
@@ -199,7 +202,7 @@ func TestTarOCIWriterRoundTrip(t *testing.T) {
 	defer idx.Close()
 
 	for d, want := range blobs {
-		r, _, err := idx.ReadBlob(d)
+		r, _, _, err := idx.ReadBlob(d)
 		if err != nil {
 			t.Fatalf("ReadBlob(%s): %v", d, err)
 		}
@@ -233,7 +236,7 @@ func TestTarOCIWriterFromReader(t *testing.T) {
 	}
 	defer idx.Close()
 
-	r, _, err := idx.ReadBlob(d)
+	r, _, _, err := idx.ReadBlob(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,6 +336,16 @@ func TestReadBlob(t *testing.T) {
 	_, err = readBlob(reader, digest.FromBytes([]byte("missing")))
 	if err == nil {
 		t.Error("expected error for missing blob")
+	}
+
+	// Corrupt blob: content stored under wrong digest
+	wrongDigest := digest.FromBytes([]byte("wrong"))
+	corruptReader := newMemoryReader(map[string][]byte{
+		blobTarName(wrongDigest): content,
+	})
+	_, err = readBlob(corruptReader, wrongDigest)
+	if err == nil {
+		t.Error("expected error for digest mismatch")
 	}
 }
 

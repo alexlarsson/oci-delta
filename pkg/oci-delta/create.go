@@ -123,7 +123,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 			continue
 		}
 		r := layerResultByDigest[l.Digest]
-		stats.ProcessedLayerBytes += r.originalSize
+		stats.ProcessedLayerBytes += r.actualSize
 
 		annotations := map[string]string{
 			annotationDeltaContent: "image-layer",
@@ -131,7 +131,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 		}
 		var desc v1.Descriptor
 		if r.diffPath != "" {
-			log.Debug("  Layer %s: using tar-diff (%d bytes, saved %d)", r.digest.Encoded()[:16], r.diffSize, r.originalSize-r.diffSize)
+			log.Debug("  Layer %s: using tar-diff (%d bytes, saved %d)", r.digest.Encoded()[:16], r.diffSize, r.actualSize-r.diffSize)
 			desc = v1.Descriptor{
 				MediaType:   mediaTypeTarDiff,
 				Digest:      r.diffDigest,
@@ -140,14 +140,14 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 			}
 			stats.TarDiffLayerBytes += r.diffSize
 		} else {
-			log.Debug("  Layer %s: using original (%d bytes)", r.digest.Encoded()[:16], r.originalSize)
+			log.Debug("  Layer %s: using original (%d bytes)", r.digest.Encoded()[:16], r.actualSize)
 			desc = v1.Descriptor{
 				MediaType:   v1.MediaTypeImageLayerGzip,
-				Digest:      r.digest,
-				Size:        r.originalSize,
+				Digest:      r.actualDigest,
+				Size:        r.actualSize,
 				Annotations: annotations,
 			}
-			stats.OriginalLayerBytes += r.originalSize
+			stats.OriginalLayerBytes += r.actualSize
 		}
 		deltaLayers = append(deltaLayers, desc)
 	}
@@ -262,7 +262,10 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 				return nil, err
 			}
 		} else {
-			if err := writeBlob(writer, new.reader, r.digest); err != nil {
+			// In the containers storage case the layer as extracted has been recompressed, while
+			// still being addressed by the old digest. So we have to rename the blob as we copy
+			// it into the delta
+			if err := copyBlobAndRename(writer, new.reader, r.digest, r.actualDigest); err != nil {
 				return nil, err
 			}
 		}
@@ -294,9 +297,14 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 }
 
 type layerDiffResult struct {
-	digest       digest.Digest
-	originalSize int64
-	diffPath     string // temp file path; empty means use original layer
+	digest digest.Digest // Layer digest as referenced in the image manifest
+	// In the case where the source is container-storage we had to rebuild the
+	// layer content, including recompressing them. However, we need the manifest
+	// to matcht the original, to allow signatures to keep working. This means
+	// we have to be careful about the difference when reusing layers.
+	actualSize   int64         // Actual size of the referenced blob contant
+	actualDigest digest.Digest // Actual digest of the referenced blob contant
+	diffPath     string        // temp file path; empty means reuse original layer
 	diffSize     int64
 	diffDigest   digest.Digest // sha256 of the diff file blob
 }
@@ -316,7 +324,7 @@ func computeLayerDiffsParallel(log Logger, old *OCIImage, new *OCIImage, newOnly
 
 	var oldFiles []io.ReadSeeker
 	for _, layer := range old.layers {
-		r, _, err := old.reader.ReadBlob(layer.Digest)
+		r, _, _, err := old.reader.ReadBlob(layer.Digest)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get old layer reader: %w", err)
 		}
@@ -367,7 +375,7 @@ func computeLayerDiffsParallel(log Logger, old *OCIImage, new *OCIImage, newOnly
 }
 
 func computeLayerDiff(log Logger, old *OCIImage, new *OCIImage, blobDigest digest.Digest, layerNum, total int, tmpDir string, sources *tardiff.SourceAnalysis, diffOpts *tardiff.Options) (layerDiffResult, error) {
-	sizeReader, originalSize, err := new.reader.ReadBlob(blobDigest)
+	sizeReader, originalSize, actualDigest, err := new.reader.ReadBlob(blobDigest)
 	if err != nil {
 		return layerDiffResult{}, fmt.Errorf("failed to get layer size %s: %w", blobDigest.Encoded()[:16], err)
 	}
@@ -385,13 +393,13 @@ func computeLayerDiff(log Logger, old *OCIImage, new *OCIImage, blobDigest diges
 	if err := runTarDiff(old, new, blobDigest, diffPath, sources, diffOpts); err != nil {
 		log.Warning("tar-diff failed for layer %s: %v, using original", blobDigest.Encoded()[:16], err)
 		os.Remove(diffPath)
-		return layerDiffResult{digest: blobDigest, originalSize: originalSize}, nil
+		return layerDiffResult{digest: blobDigest, actualSize: originalSize, actualDigest: actualDigest}, nil
 	}
 
 	info, err := os.Stat(diffPath)
 	if err != nil || info.Size() >= originalSize {
 		os.Remove(diffPath)
-		return layerDiffResult{digest: blobDigest, originalSize: originalSize}, nil
+		return layerDiffResult{digest: blobDigest, actualSize: originalSize, actualDigest: actualDigest}, nil
 	}
 
 	diffDigest, err := computeFileDigest(diffPath)
@@ -400,14 +408,14 @@ func computeLayerDiff(log Logger, old *OCIImage, new *OCIImage, blobDigest diges
 		return layerDiffResult{}, fmt.Errorf("failed to compute diff digest: %w", err)
 	}
 
-	return layerDiffResult{digest: blobDigest, originalSize: originalSize, diffPath: diffPath, diffSize: info.Size(), diffDigest: diffDigest}, nil
+	return layerDiffResult{digest: blobDigest, actualSize: originalSize, actualDigest: actualDigest, diffPath: diffPath, diffSize: info.Size(), diffDigest: diffDigest}, nil
 }
 
 func runTarDiff(old *OCIImage, new *OCIImage, newLayerDigest digest.Digest, output string, sources *tardiff.SourceAnalysis, diffOpts *tardiff.Options) error {
 	var oldFiles []io.ReadSeeker
 
 	for _, layer := range old.layers {
-		r, _, err := old.reader.ReadBlob(layer.Digest)
+		r, _, _, err := old.reader.ReadBlob(layer.Digest)
 		if err != nil {
 			return err
 		}
@@ -415,7 +423,7 @@ func runTarDiff(old *OCIImage, new *OCIImage, newLayerDigest digest.Digest, outp
 		oldFiles = append(oldFiles, r)
 	}
 
-	newFile, _, err := new.reader.ReadBlob(newLayerDigest)
+	newFile, _, _, err := new.reader.ReadBlob(newLayerDigest)
 	if err != nil {
 		return err
 	}

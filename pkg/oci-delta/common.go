@@ -173,6 +173,21 @@ func buildIndexDescriptor(mediaType string, dgst digest.Digest, size int64, imag
 	return desc
 }
 
+func verifyBlobDigest(r io.ReadSeeker, expected digest.Digest) error {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return fmt.Errorf("failed to read blob for verification: %w", err)
+	}
+	actual := digest.NewDigestFromBytes(digest.SHA256, h.Sum(nil))
+	if actual != expected {
+		return fmt.Errorf("blob digest mismatch: expected %s, got %s", expected, actual)
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek after verification: %w", err)
+	}
+	return nil
+}
+
 func computeFileDigest(path string) (digest.Digest, error) {
 	f, err := os.Open(path)
 	if err != nil {

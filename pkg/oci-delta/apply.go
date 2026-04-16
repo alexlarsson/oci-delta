@@ -28,7 +28,7 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 	}
 
 	// Write image config blob (unchanged).
-	if err := writeBlob(writer, delta.reader, delta.imageConfigDigest); err != nil {
+	if err := copyBlob(writer, delta.reader, delta.imageConfigDigest); err != nil {
 		return fmt.Errorf("failed to write image config: %w", err)
 	}
 
@@ -57,6 +57,10 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 			if err != nil {
 				return fmt.Errorf("failed to read tar-diff for layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
+			if err := verifyBlobDigest(r, deltaLayer.Digest); err != nil {
+				r.Close()
+				return fmt.Errorf("tar-diff blob corrupted for layer %s: %w", layer.Digest.Encoded()[:16], err)
+			}
 			newDigest, newSize, err := processLayerDiff(opts.TmpDir, log, writer, r, expectedDiffID, dataSource)
 			if err != nil {
 				return err
@@ -65,9 +69,11 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 			outputLayers[i].Size = newSize
 		} else {
 			log.Debug("  Layer %s: copying original (%d bytes)", layer.Digest.Encoded()[:16], deltaLayer.Size)
-			if err := writeBlob(writer, delta.reader, layer.Digest); err != nil {
+			if err := copyBlob(writer, delta.reader, deltaLayer.Digest); err != nil {
 				return fmt.Errorf("failed to copy layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
+			outputLayers[i].Digest = deltaLayer.Digest
+			outputLayers[i].Size = deltaLayer.Size
 		}
 	}
 
@@ -105,13 +111,25 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 	return nil
 }
 
-func writeBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
-	r, size, err := reader.ReadBlob(d)
+func copyBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
+	return copyBlobAndRename(w, reader, d, d)
+}
+
+func copyBlobAndRename(w OCIWriter, reader OCIReader, readDigest, writeDigest digest.Digest) error {
+	r, size, _, err := reader.ReadBlob(readDigest)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	return w.WriteFileFromReader(blobTarName(d), size, r)
+	h := sha256.New()
+	if err := w.WriteFileFromReader(blobTarName(writeDigest), size, io.TeeReader(r, h)); err != nil {
+		return err
+	}
+	actual := digest.NewDigestFromBytes(digest.SHA256, h.Sum(nil))
+	if actual != writeDigest {
+		return fmt.Errorf("blob digest mismatch: expected %s, got %s", writeDigest, actual)
+	}
+	return nil
 }
 
 func writeFileFromPath(w OCIWriter, name string, filePath string) error {
