@@ -334,6 +334,16 @@ func TestReadBlob(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for missing blob")
 	}
+
+	// Corrupt blob: content stored under wrong digest
+	wrongDigest := digest.FromBytes([]byte("wrong"))
+	corruptReader := newMemoryReader(map[string][]byte{
+		blobTarName(wrongDigest): content,
+	})
+	_, err = readBlob(corruptReader, wrongDigest)
+	if err == nil {
+		t.Error("expected error for digest mismatch")
+	}
 }
 
 // --- OpenOCIReader/Writer dispatch ---

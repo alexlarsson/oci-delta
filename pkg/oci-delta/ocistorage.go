@@ -115,7 +115,14 @@ func readBlob(reader OCIReader, d digest.Digest) ([]byte, error) {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if computeDigest(data) != d {
+		return nil, fmt.Errorf("blob digest mismatch: expected %s, got %s", d, computeDigest(data))
+	}
+	return data, nil
 }
 
 // TarIndex — tar archive backed OCIReader
