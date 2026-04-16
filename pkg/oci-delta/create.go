@@ -265,7 +265,7 @@ func CreateDelta(oldReader OCIReader, newReader OCIReader, writer OCIWriter, opt
 			// In the containers storage case the layer as extracted has been recompressed, while
 			// still being addressed by the old digest. So we have to rename the blob as we copy
 			// it into the delta
-			if err := writeBlobAndRename(writer, new.reader, r.digest, r.actualDigest); err != nil {
+			if err := copyBlobAndRename(writer, new.reader, r.digest, r.actualDigest); err != nil {
 				return nil, err
 			}
 		}

@@ -28,7 +28,7 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 	}
 
 	// Write image config blob (unchanged).
-	if err := writeBlob(writer, delta.reader, delta.imageConfigDigest); err != nil {
+	if err := copyBlob(writer, delta.reader, delta.imageConfigDigest); err != nil {
 		return fmt.Errorf("failed to write image config: %w", err)
 	}
 
@@ -69,7 +69,7 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 			outputLayers[i].Size = newSize
 		} else {
 			log.Debug("  Layer %s: copying original (%d bytes)", layer.Digest.Encoded()[:16], deltaLayer.Size)
-			if err := writeBlob(writer, delta.reader, deltaLayer.Digest); err != nil {
+			if err := copyBlob(writer, delta.reader, deltaLayer.Digest); err != nil {
 				return fmt.Errorf("failed to copy layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
 			outputLayers[i].Digest = deltaLayer.Digest
@@ -111,11 +111,11 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 	return nil
 }
 
-func writeBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
-	return writeBlobAndRename(w, reader, d, d)
+func copyBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
+	return copyBlobAndRename(w, reader, d, d)
 }
 
-func writeBlobAndRename(w OCIWriter, reader OCIReader, readDigest, writeDigest digest.Digest) error {
+func copyBlobAndRename(w OCIWriter, reader OCIReader, readDigest, writeDigest digest.Digest) error {
 	r, size, _, err := reader.ReadBlob(readDigest)
 	if err != nil {
 		return err
