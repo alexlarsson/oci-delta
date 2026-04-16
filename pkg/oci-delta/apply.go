@@ -115,7 +115,15 @@ func writeBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
 		return err
 	}
 	defer r.Close()
-	return w.WriteFileFromReader(blobTarName(d), size, r)
+	h := sha256.New()
+	if err := w.WriteFileFromReader(blobTarName(d), size, io.TeeReader(r, h)); err != nil {
+		return err
+	}
+	actual := digest.NewDigestFromBytes(digest.SHA256, h.Sum(nil))
+	if actual != d {
+		return fmt.Errorf("blob digest mismatch: expected %s, got %s", d, actual)
+	}
+	return nil
 }
 
 func writeFileFromPath(w OCIWriter, name string, filePath string) error {
