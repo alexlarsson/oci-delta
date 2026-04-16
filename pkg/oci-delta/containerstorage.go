@@ -94,14 +94,6 @@ func ResolveContainerStorageDataSource(store storage.Store, sourceConfigDigest s
 	}, nil
 }
 
-func imageHasSignatures(store storage.Store, imageID string) (bool, error) {
-	sizes, _, err := getSignatureSizes(store, imageID)
-	if err != nil {
-		return false, err
-	}
-	return len(sizes) > 0, nil
-}
-
 const sigstoreJSONPrefix = "\x00sigstore-json\n"
 
 type sigstoreJSONRepresentation struct {
