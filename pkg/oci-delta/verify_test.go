@@ -54,13 +54,13 @@ type memReader struct {
 	blobs map[digest.Digest][]byte
 }
 
-func (m *memReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+func (m *memReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error) {
 	data, ok := m.blobs[d]
 	if !ok {
-		return nil, 0, os.ErrNotExist
+		return nil, 0, "", os.ErrNotExist
 	}
 	r := bytes.NewReader(data)
-	return readSeekNopCloser{r}, int64(len(data)), nil
+	return readSeekNopCloser{r}, int64(len(data)), d, nil
 }
 
 func (m *memReader) GetManifestDigest() (digest.Digest, error) {

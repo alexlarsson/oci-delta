@@ -283,12 +283,12 @@ func (m *memoryReader) GetManifestDigest() (digest.Digest, error) {
 	return parseManifestDigestFromIndex(data, "")
 }
 
-func (m *memoryReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, error) {
+func (m *memoryReader) ReadBlob(d digest.Digest) (io.ReadSeekCloser, int64, digest.Digest, error) {
 	data, ok := m.files[blobTarName(d)]
 	if !ok {
-		return nil, 0, fmt.Errorf("blob not found: %s", d)
+		return nil, 0, "", fmt.Errorf("blob not found: %s", d)
 	}
-	return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), nil
+	return readSeekNopCloser{bytes.NewReader(data)}, int64(len(data)), d, nil
 }
 
 func (m *memoryReader) Close() error {

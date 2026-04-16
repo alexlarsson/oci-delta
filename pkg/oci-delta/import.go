@@ -69,7 +69,7 @@ func ImportDelta(delta *DeltaArtifact, store storage.Store, opts ImportOptions, 
 			log.Debug("    Created layer %s", newLayer.ID[:16])
 		} else {
 			log.Debug("  Layer %d: importing original layer", i)
-			r, err := delta.GetBlobReader(layer.Digest)
+			r, err := delta.GetBlobReader(deltaLayer.Digest)
 			if err != nil {
 				return "", fmt.Errorf("failed to read layer: %w", err)
 			}

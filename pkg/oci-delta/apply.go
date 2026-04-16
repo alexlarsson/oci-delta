@@ -69,9 +69,11 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 			outputLayers[i].Size = newSize
 		} else {
 			log.Debug("  Layer %s: copying original (%d bytes)", layer.Digest.Encoded()[:16], deltaLayer.Size)
-			if err := writeBlob(writer, delta.reader, layer.Digest); err != nil {
+			if err := writeBlob(writer, delta.reader, deltaLayer.Digest); err != nil {
 				return fmt.Errorf("failed to copy layer %s: %w", layer.Digest.Encoded()[:16], err)
 			}
+			outputLayers[i].Digest = deltaLayer.Digest
+			outputLayers[i].Size = deltaLayer.Size
 		}
 	}
 
@@ -110,18 +112,22 @@ func ApplyDelta(delta *DeltaArtifact, writer OCIWriter, dataSource DataSource, o
 }
 
 func writeBlob(w OCIWriter, reader OCIReader, d digest.Digest) error {
-	r, size, err := reader.ReadBlob(d)
+	return writeBlobAndRename(w, reader, d, d)
+}
+
+func writeBlobAndRename(w OCIWriter, reader OCIReader, readDigest, writeDigest digest.Digest) error {
+	r, size, _, err := reader.ReadBlob(readDigest)
 	if err != nil {
 		return err
 	}
 	defer r.Close()
 	h := sha256.New()
-	if err := w.WriteFileFromReader(blobTarName(d), size, io.TeeReader(r, h)); err != nil {
+	if err := w.WriteFileFromReader(blobTarName(writeDigest), size, io.TeeReader(r, h)); err != nil {
 		return err
 	}
 	actual := digest.NewDigestFromBytes(digest.SHA256, h.Sum(nil))
-	if actual != d {
-		return fmt.Errorf("blob digest mismatch: expected %s, got %s", d, actual)
+	if actual != writeDigest {
+		return fmt.Errorf("blob digest mismatch: expected %s, got %s", writeDigest, actual)
 	}
 	return nil
 }
