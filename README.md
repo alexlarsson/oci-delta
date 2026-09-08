@@ -31,30 +31,48 @@ up with an identical layer, even if the images are not directly related. This al
 of delta support to be more efficient than you would otherwise think.
 
 The second level of delta is at the file level inside each layer. Even if a layer has changed, often
-many files are identical, and others are similar to the previous version of the same file. On a
-bootc system the layer files for an installed image are available in the ostree repository under
-`/ostree/repo/objects`, even for images that are not the currently booted system. So, the idea is to
+many files are identical, and others are similar to the previous version of the same file. The
+assumption we make is that the target system has the complete old image locally available in some
+form, so we can use the entire old image as source material for the deltas. So, the idea is to
 create a delta format that allows reconstructing the "delta level 1" oci archive file given the
-information in the delta and the existing repo object files. Then the reconstructed oci archived
+information in the delta and the locally available old image. Then the reconstructed oci archive
 can be used with `bootc switch` to install the image.
 
 To create these layer deltas, we use the [tar-diff](https://github.com/containers/tar-diff) tool
-that creates binary deltas between tar files.
+that creates binary deltas between tar files. Each changed layer of the new image is diffed against
+*all* the layers of the old image at once, with OCI whiteouts applied, so that the delta sources
+correspond to the merged filesystem of the old image rather than to individual layers.
 
-A typical bootc layer has content that looks something like this:
+Files in the source are addressed by their regular filesystem path, like `usr/bin/bash`. This
+matters because a typical bootc layer has content that looks something like this:
+
 ```
 -rwxr-xr-x 0/0         1410656 1970-01-01 01:00 sysroot/ostree/repo/objects/8a/5d...d.file
 hrwxr-xr-x 0/0               0 1970-01-01 01:00 usr/bin/bash link to sysroot/ostree/repo/objects/8a/5d...d.file
 ```
 
-In other words, it has the ostree object file, as well as a hardlink to it with the deployed
-path. This makes it easy to know which files can be used as sources for the deltas. We can just look
-for a file prefix of `sysroot/ostree/repo/objects`.
+In other words, each file appears twice: once as an ostree object file, and once as a hardlink to it
+with the deployed path. We tell tar-diff to ignore the `sysroot/ostree/` prefix when picking source
+names, so the deployed path is used instead. The ostree object paths are an artifact of how the
+image is packaged for installation; what is actually available on the target system afterwards is
+the merged image content addressed by deployed path.
+
+At apply time, oci-delta needs to look up old file content by path. There are three ways to provide
+this:
+
+ * `--ostree-repo` (default, `/ostree/repo`): the ostree ref of the old image is located by matching
+   the source image config digest recorded in the delta, and its commit is enumerated to map each
+   deployed path to the corresponding repo object file.
+ * `--container-storage`: the old image is found in a podman container storage by config digest and
+   mounted, and the mount is used as the source.
+ * `--directory`: a plain directory holding the old image content, i.e. an unpacked root filesystem,
+   mostly useful for testing and for applying deltas off-system.
 
 To completely support what is required, tar-diff supports:
  * support the hardlinked structure of bootc images
- * support multiple "old" images (we can use all old layers as delta source material)
- * filtering the delta source files by prefix
+ * support multiple "old" layers (we use all old layers as delta source material)
+ * whiteout processing, so the sources reflect the merged old image
+ * ignoring delta source names by prefix
 
 Of course, some layers are bound to be completely new, so we only store the tar-diff for layers
 where the diff is smaller than the original layer file.
@@ -285,7 +303,7 @@ OCI archive.
 annotation containing the digest of the target layer this blob reconstructs. Has one of two media types:
 
 - `application/vnd.tar-diff`: a [tar-diff](https://github.com/containers/tar-diff) binary delta. Applying it against the
-  source files (ostree objects on the local system) produces the uncompressed target layer tar. The result must be
+  locally available content of the old image produces the uncompressed target layer tar. The result must be
   gzip-compressed and its diff_id validated before use.
 - `application/vnd.oci.image.layer.v1.tar+gzip`: the original layer, stored verbatim when the tar-diff would have been
   larger.
@@ -307,8 +325,10 @@ To reconstruct a usable OCI archive from a delta:
 1. Parse the delta manifest and locate the embedded image manifest and config by `io.github.containers.delta.content`
    annotations.
 2. For each layer in the image manifest, find the matching delta layer by `delta.to` annotation.
-   - If found as a tar-diff: apply against local ostree objects under `/sysroot/ostree/repo/objects/`, gzip-compress the
-     result, and verify the diff_id matches the config.
+   - If found as a tar-diff: apply it against the local copy of the old image (looked up by the
+     `delta.source-config` digest in the ostree repo or container storage, or given explicitly as a directory),
+     resolving source files by their deployed path, then gzip-compress the result and verify the diff_id matches
+     the config.
    - If found as original gzip: copy the blob directly.
    - If not found: the layer is reused - omit the blob from the output (bootc will locate it by diff_id).
 3. Write a new OCI archive with the image config, the reconstructed layer blobs, and a rewritten image manifest
