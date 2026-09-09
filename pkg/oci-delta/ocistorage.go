@@ -16,6 +16,7 @@ import (
 
 	storageTransport "github.com/containers/image/v5/storage"
 	"github.com/containers/storage"
+	"github.com/containers/storage/pkg/archive"
 	digest "github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -458,7 +459,12 @@ func exportStorageLayers(store storage.Store, manifest *v1.Manifest, diffIDs []d
 
 		sl := existing[0]
 
-		diffReader, err := store.Diff(sl.Parent, sl.ID, nil)
+		uncompressed := archive.Uncompressed
+		diffOptions := storage.DiffOptions{
+			Compression: &uncompressed,
+		}
+
+		diffReader, err := store.Diff(sl.Parent, sl.ID, &diffOptions)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to export layer %s: %w", diffID.Encoded()[:16], err)
 		}
