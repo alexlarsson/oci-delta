@@ -510,7 +510,9 @@ func newCSReader(store storage.Store, img *storage.Image, tmpDir string, log *sl
 		return nil, fmt.Errorf("failed to parse manifest: %w", err)
 	}
 
-	if manifest.MediaType != v1.MediaTypeImageManifest {
+	// mediaType on the manifest itself is optional per the OCI spec, so only
+	// reject it if it's explicitly set to something else (e.g. a docker manifest).
+	if manifest.MediaType != "" && manifest.MediaType != v1.MediaTypeImageManifest {
 		return nil, fmt.Errorf("image %s has unsupported manifest type %q, only OCI manifests are supported", img.ID[:16], manifest.MediaType)
 	}
 
